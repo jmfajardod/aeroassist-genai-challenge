@@ -17,7 +17,7 @@ lint: ## Run static checks
 	$(RUN) ruff check .
 
 run: ## Start the API locally on port 8080
-	$(RUN) uvicorn app.main:app --host 0.0.0.0 --port 8080
+	$(RUN) uvicorn app.main:app --host 0.0.0.0 --port 8080 --no-access-log
 
 evaluate-public: ## Run the public black-box cases against BASE_URL
 	$(RUN) python scripts/evaluate_public.py --base-url $(BASE_URL)

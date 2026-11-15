@@ -2,52 +2,76 @@
 
 from __future__ import annotations
 
-from typing import Any
+import datetime
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+import pydantic
 
 
-class ChatRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class ChatRequest(pydantic.BaseModel):
+    """Chat input; message length limits apply after trimming."""
 
-    message: str = Field(min_length=1, max_length=4_000)
-    session_id: str | None = Field(default=None, max_length=128)
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+    message: str = pydantic.Field(min_length=1, max_length=4_000)
+    session_id: str | None = pydantic.Field(default=None, max_length=128)
     confirm_action: bool = False
 
-    @field_validator("message")
+    @pydantic.field_validator("message", mode="before")
     @classmethod
-    def message_must_not_be_blank(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("message must not be blank")
-        return value
+    def strip_message(cls, value: object) -> object:
+        """Trims surrounding whitespace before the length checks run."""
+        return value.strip() if isinstance(value, str) else value
 
 
-class Citation(BaseModel):
+class Citation(pydantic.BaseModel):
+    """A knowledge-base chunk that supports the answer."""
+
     doc_id: str
     title: str
     chunk_id: str
-    score: float = Field(ge=0.0, le=1.0)
+    score: float = pydantic.Field(ge=0.0, le=1.0)
 
 
-class ToolCallTrace(BaseModel):
+class ToolCallTrace(pydantic.BaseModel):
+    """An executed tool call, with validated arguments only."""
+
     name: str
     arguments: dict[str, Any]
     status: str
-    duration_ms: int = Field(ge=0)
+    duration_ms: int = pydantic.Field(ge=0)
 
 
-class ChatResponse(BaseModel):
+class Similarity(pydantic.BaseModel):
+    """Retrieval score summary on the [0, 1] scale."""
+
+    top: float = pydantic.Field(ge=0.0, le=1.0)
+    mean: float = pydantic.Field(ge=0.0, le=1.0)
+
+
+class ChatResponse(pydantic.BaseModel):
+    """Chat output: contract fields first, then diagnostic extras."""
+
     answer: str
-    citations: list[Citation] = Field(default_factory=list)
-    tool_calls: list[ToolCallTrace] = Field(default_factory=list)
+    citations: list[Citation] = pydantic.Field(default_factory=list)
+    tool_calls: list[ToolCallTrace] = pydantic.Field(default_factory=list)
     requires_confirmation: bool = False
     request_id: str
     model: str
-    latency_ms: int = Field(ge=0)
+    latency_ms: int = pydantic.Field(ge=0)
+    abstained: bool = False
+    grounding: Literal["grounded", "qualified", "ungrounded", "not_applicable"] = (
+        "not_applicable"
+    )
+    similarity: Similarity | None = None
+    route: str | None = None
+    index_version: str | None = None
+    latency_breakdown_ms: dict[str, int] = pydantic.Field(default_factory=dict)
 
 
-class CapabilityLevels(BaseModel):
+class CapabilityLevels(pydantic.BaseModel):
+    """Per-level flags; true only when backed by passing evidence."""
+
     foundation: bool
     core: bool
     tools_mcp: bool
@@ -55,9 +79,12 @@ class CapabilityLevels(BaseModel):
     production: bool
 
 
-class CapabilitiesResponse(BaseModel):
+class CapabilitiesResponse(pydantic.BaseModel):
+    """Capabilities report for evaluators."""
+
     challenge_version: str
     levels: CapabilityLevels
     llm_backend: str
     tool_transport: str
-
+    variant_id: str | None = None
+    reference_date: datetime.date | None = None
