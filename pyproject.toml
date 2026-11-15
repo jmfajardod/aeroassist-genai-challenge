@@ -9,15 +9,20 @@ description = "Progressive GenAI MLE challenge"
 requires-python = ">=3.11,<3.14"
 dependencies = [
   "fastapi>=0.115,<1.0",
-  "google-genai>=1.50,<2.0",
+  "fastembed>=0.7,<1.0",
+  "langchain>=1.0,<2.0",
+  "langchain-openai>=1.0,<2.0",
+  "langfuse>=5.0,<6.0",
+  "langgraph>=1.0,<2.0",
   "mcp>=1.18,<2.0",
-  "numpy>=2.0,<3.0",
+  "prometheus-client>=0.21,<1.0",
   "pydantic>=2.9,<3.0",
-  "scikit-learn>=1.5,<2.0",
+  "pydantic-settings>=2.6,<3.0",
+  "qdrant-client>=1.15,<2.0",
   "uvicorn[standard]>=0.30,<1.0",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
   "httpx>=0.27,<1.0",
   "pytest>=8.3,<10.0",
@@ -25,6 +30,12 @@ dev = [
   "pytest-cov>=6,<8",
   "ruff>=0.9,<1.0",
 ]
+eval = [
+  "ragas>=0.3,<1.0",
+]
+
+[tool.uv]
+default-groups = ["dev"]
 
 [tool.setuptools.packages.find]
 include = ["app*", "mcp_server*"]
@@ -42,3 +53,8 @@ target-version = "py311"
 select = ["E", "F", "I", "B", "UP", "S"]
 ignore = ["S101"]
 
+[tool.ruff.lint.per-file-ignores]
+"mcp_server/server.py" = ["I001"]
+"mcp_server/store.py" = ["I001", "E501", "UP012"]
+"scripts/evaluate_public.py" = ["E501", "S310"]
+"tests/test_contract.py" = ["I001"]
