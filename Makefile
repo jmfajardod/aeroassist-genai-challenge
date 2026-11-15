@@ -3,6 +3,8 @@
 UV ?= uv
 RUN := $(UV) run --frozen
 BASE_URL ?= http://127.0.0.1:8080
+EVAL_LABEL ?= local
+EVAL_ARGS ?=
 
 help:
 	@awk 'BEGIN {FS = ":.*##"}; /^[a-zA-Z_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -25,11 +27,11 @@ evaluate-public: ## Run the public black-box cases against BASE_URL
 docker-build: ## Build the local OCI image
 	docker build -t aeroassist:local .
 
-eval-rag: ## Retrieval and grounding evaluation (paid LLM calls)
-	@echo "eval-rag is not implemented yet (roadmap commit 4)" && exit 1
+eval-rag: ## Citation, abstention and grounding metrics (add EVAL_ARGS=--judge for paid metrics)
+	$(RUN) --group eval python -m evaluation.run rag --label $(EVAL_LABEL) $(EVAL_ARGS)
 
-eval-mcp: ## Tool selection and argument evaluation (paid LLM calls)
-	@echo "eval-mcp is not implemented yet (roadmap commit 4)" && exit 1
+eval-mcp: ## Tool selection, arguments, confirmation and write-gate metrics
+	$(RUN) --group eval python -m evaluation.run mcp --label $(EVAL_LABEL) $(EVAL_ARGS)
 
-eval-e2e: ## End-to-end evaluation against BASE_URL
-	@echo "eval-e2e is not implemented yet (roadmap commit 4)" && exit 1
+eval-e2e: ## Public golden plus private-style cases (EVAL_ARGS=--base-url=<url> for remote)
+	$(RUN) --group eval python -m evaluation.run e2e --label $(EVAL_LABEL) $(EVAL_ARGS)
