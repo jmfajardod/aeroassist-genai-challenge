@@ -25,6 +25,7 @@ from app import llm
 from app import main as app_main
 from app.core import config, errors
 from app.orchestration import graph
+from app.retrieval import chunker, ingest, retriever
 from evaluation import datasets, metrics
 
 RESULTS_DIR = pathlib.Path(__file__).resolve().parent.parent / "docs" / "test_results"
@@ -84,7 +85,11 @@ def _doc_text(doc_id: str) -> str:
 
 
 def _judge_scores(cases: list[dict[str, Any]]) -> dict[str, float]:
-    """Adds Ragas Faithfulness and AnswerRelevancy using an OpenAI judge (paid)."""
+    """Adds Ragas Faithfulness and AnswerRelevancy using an OpenAI judge (paid).
+
+    Faithfulness is judged against the full text of the cited documents only, so a claim backed
+    by an uncited source counts as unsupported. Per-case scores are written into each row.
+    """
     import asyncio
 
     import openai
@@ -113,9 +118,11 @@ def _judge_scores(cases: list[dict[str, Any]]) -> dict[str, float]:
                     response=case["answer"],
                     retrieved_contexts=contexts,
                 )
-                faith.append(float(result.value))
+                case["faithfulness"] = float(result.value)
+                faith.append(case["faithfulness"])
             result = await relevancy.ascore(user_input=case["question"], response=case["answer"])
-            relevant.append(float(result.value))
+            case["answer_relevancy"] = float(result.value)
+            relevant.append(case["answer_relevancy"])
         return faith, relevant
 
     faith, relevant = asyncio.run(score_all())
@@ -311,8 +318,93 @@ def run_classify(client: ChatClient, judge: bool) -> dict[str, Any]:
     return {"summary": summary, "cases": rows}
 
 
+def run_retrieval(client: ChatClient, judge: bool) -> dict[str, Any]:
+    """Retrieval quality of the configured embedder on the RAG dataset; no LLM involved.
+
+    Indexes the knowledge base in an in-process Qdrant, then reports doc-level recall, precision,
+    hit@1 and MRR at RAG_TOP_K before any threshold, and calibrates the two thresholds: the
+    per-chunk floor must keep the best relevant chunk of every answerable question, and the
+    evidence gate on the best score should separate answerable from out-of-corpus questions.
+    """
+    del client, judge
+    settings = config.get_settings().model_copy(update={"qdrant_url": None})
+    repo = retriever.build_repository(settings)
+    ingest.sync(repo, chunker.load_corpus(settings.knowledge_base_path))
+    gate = retriever.QdrantRetriever(repo, settings.rag_min_score, settings.rag_evidence_score)
+    k = settings.rag_top_k
+    rows = []
+    for case in datasets.load(datasets.DATASETS_DIR / "rag.jsonl", datasets.RagCase):
+        started = time.perf_counter()
+        chunks = repo.search(case.question, k)
+        elapsed = (time.perf_counter() - started) * 1000
+        docs = list(dict.fromkeys(chunk.doc_id for chunk in chunks))
+        kept = list(dict.fromkeys(chunk.doc_id for chunk in gate.apply_thresholds(chunks)))
+        relevant = set(case.expected_doc_ids) | set(case.acceptable_doc_ids)
+        first = next((i for i, doc in enumerate(docs, 1) if doc in case.expected_doc_ids), None)
+        relevant_scores = [c.score for c in chunks if c.doc_id in case.expected_doc_ids]
+        rows.append(
+            {
+                "id": case.id,
+                "behavior": case.behavior,
+                "retrieved": [(c.chunk_id, round(c.score, 4)) for c in chunks],
+                "best_score": max((c.score for c in chunks), default=0.0),
+                "best_relevant_score": max(relevant_scores, default=0.0),
+                "recall": metrics.id_recall(docs, case.expected_doc_ids),
+                "precision": metrics.id_precision(docs, relevant),
+                "hit_at_1": float(bool(docs) and docs[0] in case.expected_doc_ids),
+                "reciprocal_rank": 1 / first if first else 0.0,
+                "kept": kept,
+                "expected": case.expected_doc_ids,
+                "relevant": sorted(relevant),
+                "latency_ms": round(elapsed, 1),
+            }
+        )
+    answerable = [row for row in rows if row["behavior"] != "abstain"]
+    abstain = [row for row in rows if row["behavior"] == "abstain"]
+
+    def separation(threshold: float) -> float:
+        passed = sum(row["best_score"] >= threshold for row in answerable)
+        gated = sum(row["best_score"] < threshold for row in abstain)
+        return (passed + gated) / len(rows)
+
+    best_gate = max(
+        (t / 100 for t in range(101)),
+        key=lambda t: (separation(t), -abs(t - settings.rag_evidence_score)),
+    )
+    kept_answerable = [row for row in answerable if row["kept"]]
+    summary = {
+        "cases": len(rows),
+        "dense_model": settings.dense_embedding_model
+        if settings.embedding_backend == "fastembed"
+        else "fake",
+        "top_k": k,
+        "recall_at_k": _mean([row["recall"] for row in answerable]),
+        "precision_at_k": _mean([row["precision"] for row in answerable]),
+        "hit_at_1": _mean([row["hit_at_1"] for row in answerable]),
+        "mrr": _mean([row["reciprocal_rank"] for row in answerable]),
+        "lowest_best_relevant_score": round(min(r["best_relevant_score"] for r in answerable), 4),
+        "answerable_best_score_min": round(min(r["best_score"] for r in answerable), 4),
+        "abstain_best_score_max": round(max(r["best_score"] for r in abstain), 4),
+        "suggested_evidence_score": best_gate,
+        "suggested_separation": round(separation(best_gate), 4),
+        "min_score": settings.rag_min_score,
+        "evidence_score": settings.rag_evidence_score,
+        "filtered_recall": _mean(
+            [metrics.id_recall(row["kept"], row["expected"]) for row in answerable]
+        ),
+        "filtered_precision": _mean(
+            [metrics.id_precision(row["kept"], row["relevant"]) for row in kept_answerable]
+        ),
+        "answerable_with_evidence": _mean([float(bool(row["kept"])) for row in answerable]),
+        "abstain_without_evidence": _mean([float(not row["kept"]) for row in abstain]),
+        **_latency([row["latency_ms"] for row in rows]),
+    }
+    return {"summary": summary, "cases": rows}
+
+
 SUITES: dict[str, Callable[[ChatClient, bool], dict[str, Any]]] = {
     "classify": run_classify,
+    "retrieval": run_retrieval,
     "rag": run_rag,
     "mcp": run_mcp,
     "e2e": run_e2e,

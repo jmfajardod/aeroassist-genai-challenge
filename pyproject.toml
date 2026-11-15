@@ -12,6 +12,7 @@ dependencies = [
   "fastembed>=0.7,<1.0",
   "langchain>=1.0,<2.0",
   "langchain-openai>=1.0,<2.0",
+  "langchain-text-splitters>=1.0,<2.0",
   "langfuse>=5.0,<6.0",
   "langgraph>=1.0,<2.0",
   "mcp>=1.18,<2.0",
@@ -48,6 +49,7 @@ addopts = "-q --strict-markers"
 testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
+filterwarnings = ["ignore:Payload indexes have no effect in the local Qdrant:UserWarning"]
 
 [tool.ruff]
 line-length = 100

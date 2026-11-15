@@ -1,7 +1,11 @@
 """LangGraph flow: classify, fan out to evidence branches, answer, then validate.
 
 Template routes (help, unsupported, injection, write without tools) never call the answer
-model. Evidence branches run in parallel through Send and join at the answer node.
+model. Evidence branches run in parallel through Send and join at the answer node. Retrieval
+runs on every answer route because it is cheap and the classifier's policy flag misses some
+policy questions; the evidence gate, the answer prompt and citation validation keep it from
+adding noise. When the tool step asks for missing data, the answer model receives that request
+together with any policy evidence and decides what to use.
 """
 
 from __future__ import annotations
@@ -259,7 +263,6 @@ def build(
     settings: config.Settings,
     retriever: rag.Retriever | None = None,
     tool_runner: runner.ToolRunner | None = None,
-    top_k: int = 3,
 ) -> Any:
     """Compiles the answer graph.
 
@@ -268,7 +271,6 @@ def build(
         settings: Application settings.
         retriever: Policy retriever; without one the policy branch is skipped.
         tool_runner: MCP tool runner; without one the tool and write branches are skipped.
-        top_k: Chunks requested from the retriever.
 
     Returns:
         A compiled LangGraph runnable that takes and returns State.
@@ -290,7 +292,7 @@ def build(
         sends = []
         if decision.needs_tools and tool_runner is not None:
             sends.append(lg_types.Send("tools", state))
-        if decision.needs_policy and retriever is not None:
+        if retriever is not None:
             sends.append(lg_types.Send("retrieve", state))
         return sends or "answer"
 
@@ -314,25 +316,23 @@ def build(
 
     async def retrieve_node(state: State) -> dict[str, Any]:
         assert retriever is not None
-        return {"chunks": await retriever.search(state.message, top_k=top_k)}
+        return {"chunks": await retriever.search(state.message, top_k=settings.rag_top_k)}
 
     async def answer_node(state: State) -> dict[str, Any]:
         chunks = state.chunks
         results = state.tool_results
         if not chunks and not results:
-            if clarification := state.clarification:
-                draft = outputs.Answer(
-                    answer=clarification, cited_chunk_ids=[], grounding="qualified"
-                )
-            else:
-                draft = outputs.Answer(
-                    answer=NO_EVIDENCE_ANSWER, cited_chunk_ids=[], grounding="ungrounded"
-                )
+            draft = outputs.Answer(
+                answer=state.clarification or NO_EVIDENCE_ANSWER,
+                cited_chunk_ids=[],
+                grounding="qualified" if state.clarification else "ungrounded",
+            )
             return {"draft": draft}
         prompt = prompting.load("answer").render(
             reference_date=reference_date,
             chunks=_format_chunks(chunks),
             tool_results=_format_tool_results(results),
+            missing=state.clarification or "(ninguno)",
             message=state.message,
         )
         draft = await provider.structured(role="answer", prompt=prompt, schema=outputs.Answer)

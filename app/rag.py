@@ -22,6 +22,10 @@ class RetrievedChunk(pydantic.BaseModel):
 class Retriever(Protocol):
     """Anything that returns the most relevant chunks for a query."""
 
+    @property
+    def index_version(self) -> str | None:
+        """Version of the indexed corpus, shown in responses and readiness."""
+
     async def search(self, query: str, *, top_k: int) -> list[RetrievedChunk]:
         """Returns the best-matching chunks.
 

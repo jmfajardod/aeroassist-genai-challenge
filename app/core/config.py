@@ -12,7 +12,7 @@ import pydantic_settings
 
 _ROOT = pathlib.Path(__file__).resolve().parents[2]
 
-ReasoningEffort = Literal["minimal", "low", "medium", "high"]
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high"]
 
 
 class Variant(pydantic.BaseModel):
@@ -37,15 +37,16 @@ class Settings(pydantic_settings.BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     llm_backend: Literal["fake", "openai"] = "fake"
     openai_api_key: pydantic.SecretStr | None = None
+    llm_base_url: str | None = None
     classifier_model: str = "gpt-6.1-terra"
     classifier_max_tokens: int = pydantic.Field(default=1024, gt=0)
     classifier_reasoning_effort: ReasoningEffort = "low"
-    answer_model: str = "gpt-6-luna"
+    answer_model: str = "gpt-6.1-terra"
     answer_max_tokens: int = pydantic.Field(default=2048, gt=0)
-    answer_reasoning_effort: ReasoningEffort = "low"
+    answer_reasoning_effort: ReasoningEffort = "none"
     tools_model: str = "gpt-6-luna"
     tools_max_tokens: int = pydantic.Field(default=1024, gt=0)
-    tools_reasoning_effort: ReasoningEffort = "low"
+    tools_reasoning_effort: ReasoningEffort = "none"
     llm_timeout_seconds: float = pydantic.Field(default=8.0, gt=0)
     llm_max_retries: int = pydantic.Field(default=3, ge=0)
     llm_retry_backoff_seconds: float = pydantic.Field(default=1.0, ge=0)
@@ -55,11 +56,23 @@ class Settings(pydantic_settings.BaseSettings):
     mcp_call_timeout_seconds: float = pydantic.Field(default=5.0, gt=0)
     mcp_startup_timeout_seconds: float = pydantic.Field(default=10.0, gt=0)
     request_deadline_seconds: float = pydantic.Field(default=35.0, gt=0, lt=40)
-    max_concurrent_requests: int = pydantic.Field(default=4, ge=1)
+    max_concurrent_requests: int = pydantic.Field(default=10, ge=1)
     rate_limit_per_minute: int = pydantic.Field(default=60, ge=1)
     ready_check_timeout_seconds: float = pydantic.Field(default=2.0, gt=0)
     ready_cache_seconds: float = pydantic.Field(default=5.0, ge=0)
     variant_path: pathlib.Path = _ROOT / "config" / "challenge_variant.json"
+    knowledge_base_path: pathlib.Path = _ROOT / "knowledge_base"
+    qdrant_url: str | None = None
+    qdrant_api_key: pydantic.SecretStr | None = None
+    qdrant_timeout_seconds: float = pydantic.Field(default=5.0, gt=0)
+    qdrant_collection_prefix: str = "aeroassist"
+    embedding_backend: Literal["fastembed", "fake"] = "fastembed"
+    dense_embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    sparse_embedding_model: str = "Qdrant/bm25"
+    embedding_cache_dir: pathlib.Path | None = None
+    rag_top_k: int = pydantic.Field(default=3, ge=1, le=10)
+    rag_min_score: float = pydantic.Field(default=0.2, ge=0, le=1)
+    rag_evidence_score: float = pydantic.Field(default=0.45, ge=0, le=1)
 
 
 @functools.cache

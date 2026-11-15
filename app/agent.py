@@ -27,6 +27,7 @@ class AeroAssistAgent:
     ) -> None:
         self._provider = provider
         self._settings = settings
+        self._retriever = retriever
         self._graph = graph.build(provider, settings, retriever, tool_runner)
 
     async def chat(self, request: schemas.ChatRequest, *, request_id: str) -> schemas.ChatResponse:
@@ -61,5 +62,6 @@ class AeroAssistAgent:
             grounding=outcome.grounding,
             similarity=outcome.similarity,
             route=outcome.route,
+            index_version=self._retriever.index_version if self._retriever else None,
             latency_breakdown_ms=state.get("timings_ms", {}),
         )

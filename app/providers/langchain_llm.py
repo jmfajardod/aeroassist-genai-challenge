@@ -103,6 +103,8 @@ class LangChainLLM:
             kwargs["reasoning_effort"] = reasoning_effort
             kwargs["api_key"] = self._settings.openai_api_key
             kwargs["timeout"] = self._settings.llm_timeout_seconds
+        if self._settings.llm_base_url:
+            kwargs["base_url"] = self._settings.llm_base_url
         return chat_models.init_chat_model(
             model, model_provider=self._settings.llm_backend, **kwargs
         )

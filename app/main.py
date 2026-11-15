@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import threading
 import time
+from collections.abc import AsyncIterator
 
 import fastapi
 import prometheus_client
@@ -15,6 +18,7 @@ from app.api import limits, readiness
 from app.core import config, constants, errors
 from app.mcp_tools import runner, transport
 from app.observability import log, metrics, middleware
+from app.retrieval import chunker, ingest, retriever
 
 
 class _Runtime:
@@ -24,6 +28,8 @@ class _Runtime:
         self.settings = settings
         self._agent = chat_agent
         self._transport: transport.McpTransport | None = None
+        self._retriever: retriever.QdrantRetriever | None = None
+        self._lock = threading.Lock()
 
     def transport(self) -> transport.McpTransport:
         """Returns the MCP transport; the subprocess starts on the first call."""
@@ -33,24 +39,57 @@ class _Runtime:
             )
         return self._transport
 
-    def agent(self) -> agent_lib.AeroAssistAgent:
-        """Returns the chat agent, building it on first use.
+    def _build_agent(self) -> agent_lib.AeroAssistAgent:
+        with self._lock:
+            if self._agent is None:
+                self._agent = agent_lib.AeroAssistAgent(
+                    llm.build_llm(self.settings),
+                    self.settings,
+                    retriever=self._build_retriever(),
+                    tool_runner=runner.ToolRunner(self.transport()),
+                )
+            return self._agent
+
+    def _build_retriever(self) -> retriever.QdrantRetriever:
+        """Connects to Qdrant; without QDRANT_URL it indexes the bundled corpus in process."""
+        repo = retriever.build_repository(self.settings)
+        if not self.settings.qdrant_url:
+            ingest.sync(repo, chunker.load_corpus(self.settings.knowledge_base_path))
+        self._retriever = retriever.QdrantRetriever(
+            repo, self.settings.rag_min_score, self.settings.rag_evidence_score
+        )
+        return self._retriever
+
+    async def agent(self) -> agent_lib.AeroAssistAgent:
+        """Returns the chat agent, building it in a worker thread on first use.
 
         Raises:
             errors.NotReadyError: If the configured LLM backend cannot be built.
         """
-        if self._agent is None:
-            self._agent = agent_lib.AeroAssistAgent(
-                llm.build_llm(self.settings),
-                self.settings,
-                tool_runner=runner.ToolRunner(self.transport()),
-            )
-        return self._agent
+        if self._agent is not None:
+            return self._agent
+        return await asyncio.to_thread(self._build_agent)
 
     async def llm_ready(self) -> bool:
         """Readiness check: the configured LLM backend can be built."""
-        self.agent()
+        await self.agent()
         return True
+
+    async def index_ready(self) -> bool:
+        """Readiness check: Qdrant holds the index version of the bundled knowledge base."""
+        await self.agent()
+        if self._retriever is None:
+            return False
+        expected = await asyncio.to_thread(retriever.expected_index_version, self.settings)
+        return self._retriever.index_version == expected
+
+    async def warm_up(self) -> None:
+        """Builds the agent, index and MCP session at startup; failures are left to readiness."""
+        try:
+            await self.agent()
+            await self.transport().list_tools()
+        except Exception as exc:
+            log.logger.warning("warm_up_failed", extra={"error": type(exc).__name__})
 
     async def mcp_ready(self) -> bool:
         """Readiness check: the MCP server answers and exposes every allowlisted tool."""
@@ -78,12 +117,18 @@ def create_app(
         settings.max_concurrent_requests, settings.rate_limit_per_minute
     )
     probe = readiness.Readiness(
-        {"llm": runtime.llm_ready, "mcp": runtime.mcp_ready},
+        {"llm": runtime.llm_ready, "mcp": runtime.mcp_ready, "index": runtime.index_ready},
         timeout_seconds=settings.ready_check_timeout_seconds,
         cache_seconds=settings.ready_cache_seconds,
     )
 
-    application = fastapi.FastAPI(title="AeroAssist", version=__version__)
+    @contextlib.asynccontextmanager
+    async def lifespan(_: fastapi.FastAPI) -> AsyncIterator[None]:
+        task = asyncio.create_task(runtime.warm_up())
+        yield
+        task.cancel()
+
+    application = fastapi.FastAPI(title="AeroAssist", version=__version__, lifespan=lifespan)
     errors.install_handlers(application)
     middleware.install_request_middleware(application, registry)
 
@@ -106,7 +151,7 @@ def create_app(
         return schemas.CapabilitiesResponse(
             challenge_version=variant.challenge_version,
             levels=schemas.CapabilityLevels(
-                foundation=False, core=True, tools_mcp=True, rag=False, production=False
+                foundation=False, core=True, tools_mcp=True, rag=True, production=False
             ),
             llm_backend=settings.llm_backend,
             tool_transport="mcp-stdio",
@@ -120,9 +165,8 @@ def create_app(
         with limiter.acquire():
             try:
                 async with asyncio.timeout(settings.request_deadline_seconds):
-                    response = await runtime.agent().chat(
-                        payload, request_id=request.state.request_id
-                    )
+                    chat_agent = await runtime.agent()
+                    response = await chat_agent.chat(payload, request_id=request.state.request_id)
             except TimeoutError as exc:
                 raise errors.UpstreamTimeoutError("The request exceeded its time budget.") from exc
         latency_ms = round((time.perf_counter() - started) * 1000)

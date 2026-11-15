@@ -32,6 +32,11 @@ COPY mcp_server ./mcp_server
 COPY knowledge_base ./knowledge_base
 COPY config ./config
 
+ENV EMBEDDING_CACHE_DIR=/app/models
+RUN python -c "from app.core import config; from app.retrieval import retriever; \
+retriever.build_embedder(config.Settings(_env_file=None, embedding_backend='fastembed'))"
+ENV HF_HUB_OFFLINE=1
+
 USER app
 EXPOSE 8080
 

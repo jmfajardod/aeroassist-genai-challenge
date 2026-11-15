@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pydantic
 import pytest
 from fastapi import testclient
 
 from app import agent, main, rag, schemas
 from app.core import config
+from app.mcp_tools import runner, transport
 from app.orchestration import prompting
 from app.providers import outputs
 
@@ -73,13 +76,17 @@ _CHUNKS = [
 
 
 class _Retriever:
+    index_version = "test-version"
+
     async def search(self, query: str, *, top_k: int) -> list[rag.RetrievedChunk]:
         return _CHUNKS[:top_k]
 
 
 class _ScriptedLLM:
-    def __init__(self, draft: outputs.Answer) -> None:
+    def __init__(self, draft: outputs.Answer, needs_tools: bool = False) -> None:
         self.draft = draft
+        self.needs_tools = needs_tools
+        self.answer_prompts: list[prompting.RenderedPrompt] = []
 
     @property
     def model_name(self) -> str:
@@ -90,9 +97,18 @@ class _ScriptedLLM:
     ) -> pydantic.BaseModel:
         if schema is outputs.Classification:
             return outputs.Classification(
-                route="answer", needs_tools=False, needs_policy=True, write_requested=False
+                route="answer",
+                needs_tools=self.needs_tools,
+                needs_policy=not self.needs_tools,
+                write_requested=False,
             )
+        self.answer_prompts.append(prompt)
         return self.draft
+
+    async def choose_tools(
+        self, *, prompt: prompting.RenderedPrompt, rounds: list[Any], tools: list[Any]
+    ) -> outputs.ToolStep:
+        return outputs.ToolStep(requests=[], text="Indica un número de vuelo válido.")
 
 
 async def _ask(draft: outputs.Answer) -> schemas.ChatResponse:
@@ -120,3 +136,17 @@ async def test_ungrounded_answer_abstains_and_drops_citations() -> None:
     response = await _ask(draft)
     assert response.abstained is True
     assert response.citations == []
+
+
+async def test_tool_clarification_reaches_the_answer_model_with_policy_evidence() -> None:
+    draft = outputs.Answer(answer="Indica la fecha.", cited_chunk_ids=[], grounding="qualified")
+    llm = _ScriptedLLM(draft, needs_tools=True)
+    bot = agent.AeroAssistAgent(
+        llm,
+        _settings(),
+        retriever=_Retriever(),
+        tool_runner=runner.ToolRunner(transport.StdioMcpTransport(5, 10)),
+    )
+    response = await bot.chat(schemas.ChatRequest(message="Estado del vuelo 12345"), request_id="r")
+    assert "Indica un número de vuelo válido." in llm.answer_prompts[0].user
+    assert response.citations == [] and response.tool_calls == []
