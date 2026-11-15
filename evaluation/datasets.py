@@ -114,3 +114,72 @@ def load(path: pathlib.Path, model: type[_T]) -> list[_T]:
     """
     lines = path.read_text(encoding="utf-8").splitlines()
     return [model.model_validate_json(line) for line in lines if line.strip()]
+
+
+class ClassifierLabel(_Record):
+    """Expected classifier output derived from another dataset; None fields are not scored."""
+
+    id: str
+    message: str
+    confirm_action: bool = False
+    route: Literal["injection", "help", "unsupported", "answer"]
+    needs_tools: bool | None = None
+    needs_policy: bool | None = None
+    write_requested: bool | None = None
+
+
+def classifier_labels() -> list[ClassifierLabel]:
+    """Derives classifier labels from the RAG, MCP, E2E and public datasets.
+
+    RAG cases need policy only (or are unsupported when they abstain), MCP cases need tools and
+    request a write when they are write-gate cases, and E2E or public cases contribute only
+    their unambiguous routes: injection, help and out-of-scope.
+
+    Returns:
+        One label per usable case.
+    """
+    labels = []
+    for case in load(DATASETS_DIR / "rag.jsonl", RagCase):
+        if case.behavior == "abstain":
+            labels.append(ClassifierLabel(id=case.id, message=case.question, route="unsupported"))
+        else:
+            labels.append(
+                ClassifierLabel(
+                    id=case.id,
+                    message=case.question,
+                    route="answer",
+                    needs_tools=False,
+                    needs_policy=True,
+                    write_requested=False,
+                )
+            )
+    for case in load(DATASETS_DIR / "mcp.jsonl", McpCase):
+        labels.append(
+            ClassifierLabel(
+                id=case.id,
+                message=case.request.message,
+                confirm_action=case.request.confirm_action,
+                route="answer",
+                needs_tools=True,
+                write_requested=case.tool_match == "subset",
+            )
+        )
+    e2e = load(DATASETS_DIR / "e2e.jsonl", E2ECase) + load(PUBLIC_GOLDEN, E2ECase)
+    for case in e2e:
+        route: Literal["injection", "help", "unsupported"] | None = None
+        if case.expect.error_code == "prompt_injection":
+            route = "injection"
+        elif case.id in {"public-01-capability", "e2e-14"}:
+            route = "help"
+        elif case.id in {"public-08-insufficient-evidence", "e2e-12", "e2e-13"}:
+            route = "unsupported"
+        if route:
+            labels.append(
+                ClassifierLabel(
+                    id=case.id,
+                    message=case.request.message,
+                    confirm_action=case.request.confirm_action,
+                    route=route,
+                )
+            )
+    return labels

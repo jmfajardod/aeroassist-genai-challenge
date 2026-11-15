@@ -7,6 +7,7 @@ over HTTP against a deployed base URL, and writes a JSON report.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import datetime
 import json
 import os
@@ -20,7 +21,7 @@ from typing import Any, Protocol
 import httpx
 from fastapi import testclient
 
-from app import config
+from app import config, errors, graph, llm
 from app import main as app_main
 from evaluation import datasets, metrics
 
@@ -243,7 +244,72 @@ def run_e2e(client: ChatClient, judge: bool) -> dict[str, Any]:
     return {"summary": summary, "cases": rows}
 
 
+def run_classify(client: ChatClient, judge: bool) -> dict[str, Any]:
+    """Classifier route and flag accuracy, calling the configured classifier model directly."""
+    del client, judge
+    settings = config.get_settings()
+    provider = llm.build_llm(settings)
+    fields = ("needs_tools", "needs_policy", "write_requested")
+
+    async def classify_all() -> list[dict[str, Any]]:
+        rows = []
+        for label in datasets.classifier_labels():
+            started = time.perf_counter()
+            try:
+                got = await graph.classify(provider, label.message, label.confirm_action)
+            except errors.AppError as exc:
+                rows.append(
+                    {
+                        "id": label.id,
+                        "expected_route": label.route,
+                        "route": None,
+                        "route_ok": False,
+                        "error": f"{exc.code}: {type(exc.__cause__).__name__}",
+                        "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+                    }
+                )
+                continue
+            row: dict[str, Any] = {
+                "id": label.id,
+                "expected_route": label.route,
+                "route": got.route,
+                "route_ok": got.route == label.route,
+                "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+            }
+            if label.route == "answer" and got.route == "answer":
+                for field in fields:
+                    if getattr(label, field) is not None:
+                        row[f"{field}_ok"] = getattr(got, field) == getattr(label, field)
+            rows.append(row)
+        return rows
+
+    rows = asyncio.run(classify_all())
+    summary: dict[str, Any] = {
+        "cases": len(rows),
+        "model": settings.classifier_model if settings.llm_backend != "fake" else "fake",
+        "errors": sum("error" in row for row in rows),
+        "route_accuracy": _mean([float(row["route_ok"]) for row in rows]),
+        "injection_recall": _mean(
+            [float(row["route_ok"]) for row in rows if row["expected_route"] == "injection"]
+        ),
+        "false_injection_rate": _mean(
+            [
+                float(row["route"] == "injection")
+                for row in rows
+                if row["expected_route"] != "injection"
+            ]
+        ),
+    }
+    for field in fields:
+        summary[f"{field}_accuracy"] = _mean(
+            [float(row[f"{field}_ok"]) for row in rows if f"{field}_ok" in row]
+        )
+    summary.update(_latency([row["latency_ms"] for row in rows]))
+    return {"summary": summary, "cases": rows}
+
+
 SUITES: dict[str, Callable[[ChatClient, bool], dict[str, Any]]] = {
+    "classify": run_classify,
     "rag": run_rag,
     "mcp": run_mcp,
     "e2e": run_e2e,

@@ -1,13 +1,15 @@
-"""Retrieval boundary to implement for Level 3."""
+"""Retrieval boundary used by the answer graph."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
+import dataclasses
+from typing import Protocol
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class RetrievedChunk:
+    """A knowledge-base chunk with a relevance score in [0, 1]."""
+
     doc_id: str
     title: str
     chunk_id: str
@@ -15,11 +17,7 @@ class RetrievedChunk:
     score: float
 
 
-class Retriever:
-    def __init__(self, knowledge_base: Path) -> None:
-        self.knowledge_base = knowledge_base
+class Retriever(Protocol):
+    """Anything that returns the most relevant chunks for a query."""
 
-    def search(self, query: str, *, top_k: int = 3) -> list[RetrievedChunk]:
-        del query, top_k
-        raise NotImplementedError("Implement retrieval and evaluation for Level 3")
-
+    async def search(self, query: str, *, top_k: int) -> list[RetrievedChunk]: ...

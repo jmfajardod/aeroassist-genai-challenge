@@ -40,6 +40,9 @@ default-groups = ["dev"]
 [tool.setuptools.packages.find]
 include = ["app*", "mcp_server*"]
 
+[tool.setuptools.package-data]
+app = ["prompts/*.md"]
+
 [tool.pytest.ini_options]
 addopts = "-q --strict-markers"
 testpaths = ["tests"]

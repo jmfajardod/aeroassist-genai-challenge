@@ -1,43 +1,28 @@
-"""Application orchestration boundary for the progressive levels."""
+"""Application orchestration boundary: runs the answer graph and builds the HTTP response."""
 
 from __future__ import annotations
 
-import re
-import time
-
-from app import llm, schemas
-
-_HELP = re.compile(
-    r"qu[eé] (puedes|sabes) hacer|qu[eé] (tipo de )?ayuda|c[oó]mo (me )?puedes ayudar",
-    re.IGNORECASE,
-)
-
-HELP_ANSWER = (
-    "Puedo ayudarte con: el estado de un vuelo (número y fecha), el contexto mínimo de una "
-    "reserva, alternativas de reacomodación para una ruta y fecha, y las políticas de "
-    "reacomodación, asistencia, equipaje, reembolso y asistencia especial. Para crear un hold "
-    "de reacomodación necesito tu confirmación explícita."
-)
-
-UNSUPPORTED_ANSWER = (
-    "No puedo responder esa consulta: está fuera de mi alcance o no tengo evidencia suficiente. "
-    "Puedo ayudarte con vuelos, reservas, alternativas de reacomodación y políticas de la "
-    "aerolínea."
-)
+from app import config, errors, graph, llm, rag, schemas
 
 
 class AeroAssistAgent:
-    """Answers chat requests.
-
-    This revision only routes the help intent and abstains on everything else; the LLM
-    classifier, MCP tools and RAG replace the keyword route in later stages.
+    """Answers chat requests through the compiled graph.
 
     Args:
-        provider: LLM backend whose model name is reported.
+        provider: LLM backend.
+        settings: Application settings.
+        retriever: Optional policy retriever.
     """
 
-    def __init__(self, provider: llm.LLMProvider) -> None:
-        self._llm = provider
+    def __init__(
+        self,
+        provider: llm.LLMProvider,
+        settings: config.Settings,
+        retriever: rag.Retriever | None = None,
+    ) -> None:
+        self._provider = provider
+        self._settings = settings
+        self._graph = graph.build(provider, settings, retriever)
 
     async def chat(self, request: schemas.ChatRequest, *, request_id: str) -> schemas.ChatResponse:
         """Builds the response for one chat request.
@@ -47,15 +32,29 @@ class AeroAssistAgent:
             request_id: ID echoed in the response.
 
         Returns:
-            The structured chat response.
+            The structured chat response; latency_ms is set by the HTTP layer.
+
+        Raises:
+            errors.PromptInjectionError: If the classifier flags the message.
         """
-        started = time.perf_counter()
-        is_help = bool(_HELP.search(request.message))
+        state = await self._graph.ainvoke(
+            {"message": request.message, "confirm_action": request.confirm_action},
+            config={"recursion_limit": self._settings.max_graph_steps},
+        )
+        outcome: graph.Outcome = state["outcome"]
+        if outcome.route == "injection":
+            raise errors.PromptInjectionError("The request was blocked by the safety policy.")
         return schemas.ChatResponse(
-            answer=HELP_ANSWER if is_help else UNSUPPORTED_ANSWER,
+            answer=outcome.answer,
+            citations=outcome.citations,
+            tool_calls=outcome.tool_calls,
+            requires_confirmation=outcome.requires_confirmation,
             request_id=request_id,
-            model=self._llm.model_name,
-            latency_ms=round((time.perf_counter() - started) * 1000),
-            abstained=not is_help,
-            route="help" if is_help else "unsupported",
+            model=self._provider.model_name,
+            latency_ms=0,
+            abstained=outcome.abstained,
+            grounding=outcome.grounding,
+            similarity=outcome.similarity,
+            route=outcome.route,
+            latency_breakdown_ms=state.get("timings_ms", {}),
         )

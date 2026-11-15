@@ -1,4 +1,4 @@
-.PHONY: help install test lint run evaluate-public docker-build eval-rag eval-mcp eval-e2e
+.PHONY: help install test lint run evaluate-public docker-build eval-classify eval-rag eval-mcp eval-e2e
 
 UV ?= uv
 RUN := $(UV) run --frozen
@@ -26,6 +26,9 @@ evaluate-public: ## Run the public black-box cases against BASE_URL
 
 docker-build: ## Build the local OCI image
 	docker build -t aeroassist:local .
+
+eval-classify: ## Classifier route and flag accuracy for CLASSIFIER_MODEL (paid with a real backend)
+	$(RUN) --group eval python -m evaluation.run classify --label $(EVAL_LABEL) $(EVAL_ARGS)
 
 eval-rag: ## Citation, abstention and grounding metrics (add EVAL_ARGS=--judge for paid metrics)
 	$(RUN) --group eval python -m evaluation.run rag --label $(EVAL_LABEL) $(EVAL_ARGS)

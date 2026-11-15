@@ -27,7 +27,7 @@ class _Runtime:
             errors.NotReadyError: If the configured LLM backend cannot be built.
         """
         if self._agent is None:
-            self._agent = agent_lib.AeroAssistAgent(llm.build_llm(self.settings))
+            self._agent = agent_lib.AeroAssistAgent(llm.build_llm(self.settings), self.settings)
         return self._agent
 
     async def llm_ready(self) -> bool:
