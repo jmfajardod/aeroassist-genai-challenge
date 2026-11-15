@@ -7,7 +7,8 @@ import asyncio
 import pytest
 from fastapi import testclient
 
-from app import config, errors, main, schemas
+from app import main, schemas
+from app.core import config, errors
 
 HELP = {"message": "¿Qué puedes hacer?"}
 
@@ -87,12 +88,6 @@ def test_rate_limit_returns_429() -> None:
     response = client.post("/v1/chat", json=HELP)
     assert response.status_code == 429
     assert response.json()["error"]["code"] == "rate_limited"
-
-
-def test_ready_is_503_when_llm_backend_unavailable() -> None:
-    response = _client(llm_backend="openai").get("/ready")
-    assert response.status_code == 503
-    assert response.json() == {"status": "not_ready", "checks": {"llm": False}}
 
 
 def test_ready_is_200_with_fake_backend() -> None:

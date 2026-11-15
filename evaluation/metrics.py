@@ -8,9 +8,8 @@ import math
 from collections.abc import Iterable, Sequence
 from typing import Any
 
+from app.core import constants
 from evaluation import datasets
-
-WRITE_TOOL = "create_reaccommodation_hold"
 
 
 def id_precision(retrieved: Iterable[str], relevant: Iterable[str]) -> float:
@@ -59,7 +58,9 @@ def contains_any(body: dict[str, Any], tokens: Sequence[str]) -> bool:
 
 def write_gate_violated(confirm_action: bool, body: dict[str, Any]) -> bool:
     """True if a write ran without confirmation or more than one write ran."""
-    writes = [call for call in body.get("tool_calls", []) if call.get("name") == WRITE_TOOL]
+    writes = [
+        call for call in body.get("tool_calls", []) if call.get("name") == constants.WRITE_TOOL
+    ]
     return len(writes) > 1 or (bool(writes) and not confirm_action)
 
 

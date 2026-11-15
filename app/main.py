@@ -9,8 +9,12 @@ import fastapi
 import prometheus_client
 from fastapi import responses
 
-from app import __version__, config, errors, limits, llm, observability, readiness, schemas
+from app import __version__, llm, schemas
 from app import agent as agent_lib
+from app.api import limits, readiness
+from app.core import config, constants, errors
+from app.mcp_tools import runner, transport
+from app.observability import log, metrics, middleware
 
 
 class _Runtime:
@@ -19,6 +23,15 @@ class _Runtime:
     def __init__(self, settings: config.Settings, chat_agent: agent_lib.AeroAssistAgent | None):
         self.settings = settings
         self._agent = chat_agent
+        self._transport: transport.McpTransport | None = None
+
+    def transport(self) -> transport.McpTransport:
+        """Returns the MCP transport; the subprocess starts on the first call."""
+        if self._transport is None:
+            self._transport = transport.StdioMcpTransport(
+                self.settings.mcp_call_timeout_seconds, self.settings.mcp_startup_timeout_seconds
+            )
+        return self._transport
 
     def agent(self) -> agent_lib.AeroAssistAgent:
         """Returns the chat agent, building it on first use.
@@ -27,13 +40,22 @@ class _Runtime:
             errors.NotReadyError: If the configured LLM backend cannot be built.
         """
         if self._agent is None:
-            self._agent = agent_lib.AeroAssistAgent(llm.build_llm(self.settings), self.settings)
+            self._agent = agent_lib.AeroAssistAgent(
+                llm.build_llm(self.settings),
+                self.settings,
+                tool_runner=runner.ToolRunner(self.transport()),
+            )
         return self._agent
 
     async def llm_ready(self) -> bool:
         """Readiness check: the configured LLM backend can be built."""
         self.agent()
         return True
+
+    async def mcp_ready(self) -> bool:
+        """Readiness check: the MCP server answers and exposes every allowlisted tool."""
+        names = set(await self.transport().list_tools())
+        return constants.TOOL_NAMES <= names
 
 
 def create_app(
@@ -49,33 +71,33 @@ def create_app(
         The configured application.
     """
     settings = settings or config.get_settings()
-    observability.configure_logging(settings.log_level)
+    log.configure_logging(settings.log_level)
     runtime = _Runtime(settings, agent)
-    metrics = observability.Metrics()
+    registry = metrics.Metrics()
     limiter = limits.RequestLimiter(
         settings.max_concurrent_requests, settings.rate_limit_per_minute
     )
     probe = readiness.Readiness(
-        {"llm": runtime.llm_ready},
+        {"llm": runtime.llm_ready, "mcp": runtime.mcp_ready},
         timeout_seconds=settings.ready_check_timeout_seconds,
         cache_seconds=settings.ready_cache_seconds,
     )
 
     application = fastapi.FastAPI(title="AeroAssist", version=__version__)
     errors.install_handlers(application)
-    observability.install_request_middleware(application, metrics)
+    middleware.install_request_middleware(application, registry)
 
-    @application.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok", "version": __version__}
+    @application.get("/health", response_model=schemas.HealthResponse)
+    async def health() -> schemas.HealthResponse:
+        return schemas.HealthResponse(version=__version__)
 
-    @application.get("/ready")
+    @application.get("/ready", response_model=schemas.ReadyResponse)
     async def ready() -> responses.JSONResponse:
         checks = await probe.run()
         is_ready = bool(checks) and all(checks.values())
+        body = schemas.ReadyResponse(status="ready" if is_ready else "not_ready", checks=checks)
         return responses.JSONResponse(
-            status_code=200 if is_ready else 503,
-            content={"status": "ready" if is_ready else "not_ready", "checks": checks},
+            status_code=200 if is_ready else 503, content=body.model_dump()
         )
 
     @application.get("/v1/capabilities", response_model=schemas.CapabilitiesResponse)
@@ -84,10 +106,10 @@ def create_app(
         return schemas.CapabilitiesResponse(
             challenge_version=variant.challenge_version,
             levels=schemas.CapabilityLevels(
-                foundation=False, core=False, tools_mcp=False, rag=False, production=False
+                foundation=False, core=True, tools_mcp=True, rag=False, production=False
             ),
             llm_backend=settings.llm_backend,
-            tool_transport="none",
+            tool_transport="mcp-stdio",
             variant_id=variant.variant_id,
             reference_date=variant.reference_date,
         )
@@ -109,7 +131,7 @@ def create_app(
     @application.get("/metrics")
     async def metrics_endpoint() -> fastapi.Response:
         return fastapi.Response(
-            content=metrics.render(), media_type=prometheus_client.CONTENT_TYPE_LATEST
+            content=registry.render(), media_type=prometheus_client.CONTENT_TYPE_LATEST
         )
 
     return application

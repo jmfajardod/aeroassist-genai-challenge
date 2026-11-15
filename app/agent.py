@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from app import config, errors, graph, llm, rag, schemas
+from app import llm, rag, schemas
+from app.core import config, errors
+from app.mcp_tools import runner
+from app.orchestration import graph
 
 
 class AeroAssistAgent:
@@ -12,6 +15,7 @@ class AeroAssistAgent:
         provider: LLM backend.
         settings: Application settings.
         retriever: Optional policy retriever.
+        tool_runner: Optional MCP tool runner.
     """
 
     def __init__(
@@ -19,10 +23,11 @@ class AeroAssistAgent:
         provider: llm.LLMProvider,
         settings: config.Settings,
         retriever: rag.Retriever | None = None,
+        tool_runner: runner.ToolRunner | None = None,
     ) -> None:
         self._provider = provider
         self._settings = settings
-        self._graph = graph.build(provider, settings, retriever)
+        self._graph = graph.build(provider, settings, retriever, tool_runner)
 
     async def chat(self, request: schemas.ChatRequest, *, request_id: str) -> schemas.ChatResponse:
         """Builds the response for one chat request.
@@ -38,7 +43,7 @@ class AeroAssistAgent:
             errors.PromptInjectionError: If the classifier flags the message.
         """
         state = await self._graph.ainvoke(
-            {"message": request.message, "confirm_action": request.confirm_action},
+            graph.State(message=request.message, confirm_action=request.confirm_action),
             config={"recursion_limit": self._settings.max_graph_steps},
         )
         outcome: graph.Outcome = state["outcome"]

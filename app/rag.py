@@ -2,22 +2,33 @@
 
 from __future__ import annotations
 
-import dataclasses
 from typing import Protocol
 
+import pydantic
 
-@dataclasses.dataclass(frozen=True)
-class RetrievedChunk:
+
+class RetrievedChunk(pydantic.BaseModel):
     """A knowledge-base chunk with a relevance score in [0, 1]."""
+
+    model_config = pydantic.ConfigDict(frozen=True)
 
     doc_id: str
     title: str
     chunk_id: str
     text: str
-    score: float
+    score: float = pydantic.Field(ge=0.0, le=1.0)
 
 
 class Retriever(Protocol):
     """Anything that returns the most relevant chunks for a query."""
 
-    async def search(self, query: str, *, top_k: int) -> list[RetrievedChunk]: ...
+    async def search(self, query: str, *, top_k: int) -> list[RetrievedChunk]:
+        """Returns the best-matching chunks.
+
+        Args:
+            query: User question.
+            top_k: Maximum number of chunks.
+
+        Returns:
+            Chunks ordered by descending score.
+        """

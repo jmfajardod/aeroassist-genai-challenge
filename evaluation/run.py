@@ -21,8 +21,10 @@ from typing import Any, Protocol
 import httpx
 from fastapi import testclient
 
-from app import config, errors, graph, llm
+from app import llm
 from app import main as app_main
+from app.core import config, errors
+from app.orchestration import graph
 from evaluation import datasets, metrics
 
 RESULTS_DIR = pathlib.Path(__file__).resolve().parent.parent / "docs" / "test_results"
@@ -32,7 +34,8 @@ KNOWLEDGE_BASE = pathlib.Path(__file__).resolve().parent.parent / "knowledge_bas
 class ChatClient(Protocol):
     """Anything with an httpx-style post method."""
 
-    def post(self, url: str, *, json: Any) -> httpx.Response: ...
+    def post(self, url: str, *, json: Any) -> httpx.Response:
+        """Sends a JSON POST and returns the response."""
 
 
 def make_client(base_url: str | None) -> ChatClient:
@@ -89,14 +92,14 @@ def _judge_scores(cases: list[dict[str, Any]]) -> dict[str, float]:
     from ragas.metrics import collections as ragas_metrics
 
     client = openai.AsyncOpenAI()
-    llm = llms.llm_factory(os.environ["EVAL_JUDGE_MODEL"], client=client)
+    judge = llms.llm_factory(os.environ["EVAL_JUDGE_MODEL"], client=client)
     embedder = embeddings.embedding_factory(
         "openai",
         model=os.environ.get("EVAL_EMBEDDING_MODEL", "text-embedding-3-small"),
         client=client,
     )
-    faithfulness = ragas_metrics.Faithfulness(llm=llm)
-    relevancy = ragas_metrics.AnswerRelevancy(llm=llm, embeddings=embedder)
+    faithfulness = ragas_metrics.Faithfulness(llm=judge)
+    relevancy = ragas_metrics.AnswerRelevancy(llm=judge, embeddings=embedder)
 
     async def score_all() -> tuple[list[float], list[float]]:
         faith, relevant = [], []
@@ -317,7 +320,7 @@ SUITES: dict[str, Callable[[ChatClient, bool], dict[str, Any]]] = {
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Runs one suite and writes docs/test_results/<suite>-<label>.json.
+    """Runs one suite and writes its JSON report, named after the suite and label.
 
     Args:
         argv: Command-line arguments; defaults to sys.argv.

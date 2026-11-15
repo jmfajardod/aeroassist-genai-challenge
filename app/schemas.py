@@ -69,6 +69,34 @@ class ChatResponse(pydantic.BaseModel):
     latency_breakdown_ms: dict[str, int] = pydantic.Field(default_factory=dict)
 
 
+class HealthResponse(pydantic.BaseModel):
+    """Liveness body."""
+
+    status: Literal["ok"] = "ok"
+    version: str
+
+
+class ReadyResponse(pydantic.BaseModel):
+    """Readiness body, returned with 200 when ready and 503 otherwise."""
+
+    status: Literal["ready", "not_ready"]
+    checks: dict[str, bool]
+
+
+class ErrorDetail(pydantic.BaseModel):
+    """Machine-readable code and client-safe message."""
+
+    code: str
+    message: str
+
+
+class ErrorResponse(pydantic.BaseModel):
+    """Error envelope shared by every endpoint."""
+
+    error: ErrorDetail
+    request_id: str | None
+
+
 class CapabilityLevels(pydantic.BaseModel):
     """Per-level flags; true only when backed by passing evidence."""
 

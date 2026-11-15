@@ -41,7 +41,7 @@ default-groups = ["dev"]
 include = ["app*", "mcp_server*"]
 
 [tool.setuptools.package-data]
-app = ["prompts/*.md"]
+app = ["orchestration/prompts/*.md"]
 
 [tool.pytest.ini_options]
 addopts = "-q --strict-markers"

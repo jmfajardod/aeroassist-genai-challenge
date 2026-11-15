@@ -26,6 +26,9 @@ creative writing, travel documents, fares and prices, miles, pets, or any policy
   - "unsupported" if the message is outside the supported scope.
   - "answer" otherwise.
 - needs_tools: true if a correct answer depends on live flight, booking, availability or hold data.
+  When the message names a flight or booking and asks about a policy that depends on its live
+  status (care, refunds, rebooking, priority), set it to true as well: the status must be
+  checked, not taken from the message.
 - needs_policy: true if a correct answer depends on an airline policy.
 - write_requested: true only if the message asks to create a rebooking hold, that is, to reserve
   a seat on an alternative flight for a booking.

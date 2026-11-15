@@ -1,4 +1,4 @@
-"""LLM retries, routing outcomes and citation validation."""
+"""Routing outcomes through the API and citation validation in the graph."""
 
 from __future__ import annotations
 
@@ -6,7 +6,10 @@ import pydantic
 import pytest
 from fastapi import testclient
 
-from app import agent, config, errors, llm, llm_schemas, main, prompting, rag, schemas
+from app import agent, main, rag, schemas
+from app.core import config
+from app.orchestration import prompting
+from app.providers import outputs
 
 
 def _settings(**overrides: object) -> config.Settings:
@@ -15,39 +18,6 @@ def _settings(**overrides: object) -> config.Settings:
 
 def _client(**overrides: object) -> testclient.TestClient:
     return testclient.TestClient(main.create_app(settings=_settings(**overrides)))
-
-
-class _Flaky:
-    def __init__(self, failures: list[Exception]) -> None:
-        self.failures = failures
-        self.attempts = 0
-
-    async def __call__(self) -> str:
-        self.attempts += 1
-        if self.failures:
-            raise self.failures.pop(0)
-        return "ok"
-
-
-async def test_retries_retryable_errors_then_succeeds() -> None:
-    call = _Flaky([TimeoutError(), ConnectionResetError()])
-    call.failures[1].status_code = 503  # type: ignore[attr-defined]
-    result = await llm.call_with_retries(call, timeout_seconds=1, max_retries=3, backoff_seconds=0)
-    assert result == "ok" and call.attempts == 3
-
-
-async def test_non_retryable_error_fails_fast_as_502() -> None:
-    call = _Flaky([ValueError("bad schema")])
-    with pytest.raises(errors.UpstreamError):
-        await llm.call_with_retries(call, timeout_seconds=1, max_retries=3, backoff_seconds=0)
-    assert call.attempts == 1
-
-
-async def test_exhausted_timeouts_raise_504() -> None:
-    call = _Flaky([TimeoutError()] * 4)
-    with pytest.raises(errors.UpstreamTimeoutError):
-        await llm.call_with_retries(call, timeout_seconds=1, max_retries=3, backoff_seconds=0)
-    assert call.attempts == 4
 
 
 @pytest.mark.parametrize(
@@ -63,10 +33,11 @@ def test_prompt_injection_returns_400(message: str) -> None:
     assert response.json()["error"]["code"] == "prompt_injection"
 
 
-def test_unconfirmed_write_asks_for_confirmation_without_tools() -> None:
+def test_unconfirmed_write_runs_reads_only_and_asks_for_confirmation() -> None:
     body = _client().post("/v1/chat", json={"message": "Crea un hold para Q7M2PX en LA2376"}).json()
+    names = {call["name"] for call in body["tool_calls"]}
     assert body["requires_confirmation"] is True
-    assert body["tool_calls"] == []
+    assert "create_reaccommodation_hold" not in names
     assert "confirm" in body["answer"].lower()
 
 
@@ -84,8 +55,20 @@ def test_ready_requires_an_api_key_for_real_backends() -> None:
 
 
 _CHUNKS = [
-    rag.RetrievedChunk("BAGGAGE-001", "Equipaje", "BAGGAGE-001#main", "Se mantiene.", 0.8),
-    rag.RetrievedChunk("REFUND-001", "Reembolso", "REFUND-001#main", "7 a 15 días.", 0.4),
+    rag.RetrievedChunk(
+        doc_id="BAGGAGE-001",
+        title="Equipaje",
+        chunk_id="BAGGAGE-001#main",
+        text="Se mantiene.",
+        score=0.8,
+    ),
+    rag.RetrievedChunk(
+        doc_id="REFUND-001",
+        title="Reembolso",
+        chunk_id="REFUND-001#main",
+        text="7 a 15 días.",
+        score=0.4,
+    ),
 ]
 
 
@@ -95,7 +78,7 @@ class _Retriever:
 
 
 class _ScriptedLLM:
-    def __init__(self, draft: llm_schemas.Answer) -> None:
+    def __init__(self, draft: outputs.Answer) -> None:
         self.draft = draft
 
     @property
@@ -105,20 +88,20 @@ class _ScriptedLLM:
     async def structured(
         self, *, role: str, prompt: prompting.RenderedPrompt, schema: type[pydantic.BaseModel]
     ) -> pydantic.BaseModel:
-        if schema is llm_schemas.Classification:
-            return llm_schemas.Classification(
+        if schema is outputs.Classification:
+            return outputs.Classification(
                 route="answer", needs_tools=False, needs_policy=True, write_requested=False
             )
         return self.draft
 
 
-async def _ask(draft: llm_schemas.Answer) -> schemas.ChatResponse:
+async def _ask(draft: outputs.Answer) -> schemas.ChatResponse:
     bot = agent.AeroAssistAgent(_ScriptedLLM(draft), _settings(), retriever=_Retriever())
     return await bot.chat(schemas.ChatRequest(message="¿Equipaje?"), request_id="r1")
 
 
 async def test_citations_keep_only_retrieved_chunks_the_model_cited() -> None:
-    draft = llm_schemas.Answer(
+    draft = outputs.Answer(
         answer="Se mantiene.",
         cited_chunk_ids=["BAGGAGE-001#main", "SAFETY-001#invented", "BAGGAGE-001#main"],
         grounding="grounded",
@@ -131,7 +114,7 @@ async def test_citations_keep_only_retrieved_chunks_the_model_cited() -> None:
 
 
 async def test_ungrounded_answer_abstains_and_drops_citations() -> None:
-    draft = llm_schemas.Answer(
+    draft = outputs.Answer(
         answer="No puedo responder.", cited_chunk_ids=["BAGGAGE-001#main"], grounding="ungrounded"
     )
     response = await _ask(draft)

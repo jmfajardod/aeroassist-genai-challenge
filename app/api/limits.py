@@ -6,7 +6,7 @@ import contextlib
 import time
 from collections.abc import Callable, Iterator
 
-from app import errors
+from app.core import errors
 
 
 class RequestLimiter:

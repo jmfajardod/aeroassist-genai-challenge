@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import re
 
+from app.core import constants
+
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _URL = re.compile(r"\bhttps?://\S+", re.IGNORECASE)
 _IP = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
@@ -16,9 +18,6 @@ _RUT = re.compile(r"\b\d{1,2}\.?\d{3}\.?\d{3}-[\dkK]\b")
 _PHONE = re.compile(r"\+\d{1,3}(?:[\s.-]?\d){7,12}\b|\b9(?:\s?\d){8}\b")
 _DNI = re.compile(r"\b\d{8}\b")
 _PASSPORT = re.compile(r"\b[A-Z]{1,2}\d{6,8}\b", re.IGNORECASE)
-_BOOKING = re.compile(
-    r"\b(?![A-Z]{2}\d{1,4}\b)(?=[A-Z0-9]*\d)(?=[A-Z0-9]*[A-Z])[A-Z0-9]{6}\b", re.IGNORECASE
-)
 
 
 def _luhn_valid(digits: str) -> bool:
@@ -54,4 +53,4 @@ def redact(text: str) -> str:
     text = _PHONE.sub("[PHONE]", text)
     text = _DNI.sub("[DNI]", text)
     text = _PASSPORT.sub("[PASSPORT]", text)
-    return _BOOKING.sub("[BOOKING]", text)
+    return constants.BOOKING_PATTERN.sub("[BOOKING]", text)

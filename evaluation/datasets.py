@@ -10,15 +10,6 @@ import pydantic
 DATASETS_DIR = pathlib.Path(__file__).resolve().parent / "datasets"
 PUBLIC_GOLDEN = pathlib.Path(__file__).resolve().parent / "public_golden.jsonl"
 
-TOOL_NAMES = frozenset(
-    {
-        "get_flight_status",
-        "get_booking_context",
-        "search_reaccommodation",
-        "create_reaccommodation_hold",
-    }
-)
-
 
 class _Record(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid", frozen=True)

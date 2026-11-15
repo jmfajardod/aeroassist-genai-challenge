@@ -8,7 +8,7 @@ import logging
 
 import pytest
 
-from app import observability, redaction
+from app.observability import log, redaction
 
 
 @pytest.mark.parametrize(
@@ -41,11 +41,11 @@ def test_preserves_operational_identifiers() -> None:
 def test_json_log_redacts_message_and_extra_fields() -> None:
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
-    handler.setFormatter(observability.JsonFormatter())
-    log = logging.getLogger("test_redaction")
-    log.addHandler(handler)
-    log.propagate = False
-    log.warning("booking Q7M2PX", extra={"detail": "ana@example.com", "status": 200})
+    handler.setFormatter(log.JsonFormatter())
+    logger = logging.getLogger("test_redaction")
+    logger.addHandler(handler)
+    logger.propagate = False
+    logger.warning("booking Q7M2PX", extra={"detail": "ana@example.com", "status": 200})
     record = json.loads(stream.getvalue())
     assert record["message"] == "booking [BOOKING]"
     assert record["detail"] == "[EMAIL]"

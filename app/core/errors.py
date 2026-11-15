@@ -6,6 +6,8 @@ import fastapi
 from fastapi import exceptions, responses
 from starlette import exceptions as starlette_exceptions
 
+from app import schemas
+
 
 class AppError(Exception):
     """Base error whose message is safe to return to clients."""
@@ -77,10 +79,10 @@ def error_response(
     Returns:
         A JSON response {"error": {"code", "message"}, "request_id"}.
     """
-    return responses.JSONResponse(
-        status_code=status_code,
-        content={"error": {"code": code, "message": message}, "request_id": request_id},
+    body = schemas.ErrorResponse(
+        error=schemas.ErrorDetail(code=code, message=message), request_id=request_id
     )
+    return responses.JSONResponse(status_code=status_code, content=body.model_dump())
 
 
 def _request_id(request: fastapi.Request) -> str | None:

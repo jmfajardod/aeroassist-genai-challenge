@@ -6,19 +6,18 @@ part, so the shared prefix stays cacheable by the provider.
 
 from __future__ import annotations
 
-import dataclasses
 import functools
 import hashlib
 import pathlib
 import re
-from collections.abc import Mapping
+
+import pydantic
 
 _PROMPTS_DIR = pathlib.Path(__file__).resolve().parent / "prompts"
 _PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}")
 
 
-@dataclasses.dataclass(frozen=True)
-class RenderedPrompt:
+class RenderedPrompt(pydantic.BaseModel):
     """A prompt ready to send, plus the variables used to build it.
 
     Attributes:
@@ -29,16 +28,19 @@ class RenderedPrompt:
         variables: Raw values substituted into the user template.
     """
 
+    model_config = pydantic.ConfigDict(frozen=True)
+
     name: str
     version: str
     system: str
     user: str
-    variables: Mapping[str, str]
+    variables: dict[str, str]
 
 
-@dataclasses.dataclass(frozen=True)
-class Prompt:
+class Prompt(pydantic.BaseModel):
     """A system message and a user template."""
+
+    model_config = pydantic.ConfigDict(frozen=True)
 
     name: str
     system: str
@@ -63,7 +65,9 @@ class Prompt:
             KeyError: If a placeholder has no value.
         """
         user = _PLACEHOLDER.sub(lambda match: variables[match.group(1)], self.user_template)
-        return RenderedPrompt(self.name, self.version, self.system, user, dict(variables))
+        return RenderedPrompt(
+            name=self.name, version=self.version, system=self.system, user=user, variables=variables
+        )
 
 
 @functools.cache
@@ -78,4 +82,4 @@ def load(name: str) -> Prompt:
     """
     system = (_PROMPTS_DIR / f"{name}_system.md").read_text(encoding="utf-8").strip()
     user = (_PROMPTS_DIR / f"{name}_user.md").read_text(encoding="utf-8").strip()
-    return Prompt(name, system, user)
+    return Prompt(name=name, system=system, user_template=user)

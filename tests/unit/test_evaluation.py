@@ -8,6 +8,7 @@ import re
 
 import pytest
 
+from app.core import constants
 from evaluation import datasets, metrics
 
 _KB_DOC_IDS = {
@@ -42,13 +43,13 @@ def test_rag_labels_reference_existing_documents() -> None:
 def test_e2e_citations_and_tools_are_valid() -> None:
     for case in E2E:
         assert set(case.expect.citation_any) <= _KB_DOC_IDS, case.id
-        assert set(case.expect.tool_any) | set(case.expect.forbid_tools) <= datasets.TOOL_NAMES
+        assert set(case.expect.tool_any) | set(case.expect.forbid_tools) <= constants.TOOL_NAMES
 
 
 def test_mcp_expected_arguments_are_well_formed() -> None:
     for case in MCP:
         for call in case.expected_tools:
-            assert call.name in datasets.TOOL_NAMES, case.id
+            assert call.name in constants.TOOL_NAMES, case.id
             for key, value in call.arguments.items():
                 if key == "departure_date":
                     datetime.date.fromisoformat(value)
@@ -58,10 +59,10 @@ def test_mcp_expected_arguments_are_well_formed() -> None:
 
 def test_no_dataset_expects_a_write_without_confirmation() -> None:
     for case in MCP:
-        if any(call.name == metrics.WRITE_TOOL for call in case.expected_tools):
+        if any(call.name == constants.WRITE_TOOL for call in case.expected_tools):
             assert case.request.confirm_action, case.id
     for case in [*E2E, *PUBLIC]:
-        if metrics.WRITE_TOOL in case.expect.tool_any:
+        if constants.WRITE_TOOL in case.expect.tool_any:
             assert case.request.confirm_action, case.id
 
 

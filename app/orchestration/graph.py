@@ -6,17 +6,21 @@ model. Evidence branches run in parallel through Send and join at the answer nod
 
 from __future__ import annotations
 
-import dataclasses
-import json
+import datetime
 import operator
 import time
 from collections.abc import Awaitable, Callable
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any
 
+import pydantic
 from langgraph import graph as lg_graph
 from langgraph import types as lg_types
 
-from app import config, llm, llm_schemas, prompting, rag, schemas
+from app import llm, rag, schemas
+from app.core import config
+from app.mcp_tools import contracts, provenance, runner, write_gate
+from app.orchestration import prompting
+from app.providers import outputs
 
 HELP_ANSWER = (
     "Puedo ayudarte con: el estado de un vuelo (número y fecha), el contexto mínimo de una "
@@ -43,14 +47,15 @@ NO_EVIDENCE_ANSWER = (
 )
 
 
-@dataclasses.dataclass(frozen=True)
-class Outcome:
+class Outcome(pydantic.BaseModel):
     """Final, validated result of one graph run."""
+
+    model_config = pydantic.ConfigDict(frozen=True)
 
     route: str
     answer: str
-    citations: list[schemas.Citation] = dataclasses.field(default_factory=list)
-    tool_calls: list[schemas.ToolCallTrace] = dataclasses.field(default_factory=list)
+    citations: list[schemas.Citation] = []
+    tool_calls: list[schemas.ToolCallTrace] = []
     abstained: bool = False
     grounding: str = "not_applicable"
     requires_confirmation: bool = False
@@ -61,18 +66,19 @@ def _merge(left: dict[str, int], right: dict[str, int]) -> dict[str, int]:
     return {**left, **right}
 
 
-class State(TypedDict, total=False):
+class State(pydantic.BaseModel):
     """Graph state; list and timing fields are merged across parallel branches."""
 
     message: str
-    confirm_action: bool
-    classification: llm_schemas.Classification
-    chunks: Annotated[list[rag.RetrievedChunk], operator.add]
-    tool_calls: Annotated[list[schemas.ToolCallTrace], operator.add]
-    tool_results: Annotated[list[dict[str, Any]], operator.add]
-    draft: llm_schemas.Answer
-    outcome: Outcome
-    timings_ms: Annotated[dict[str, int], _merge]
+    confirm_action: bool = False
+    classification: outputs.Classification | None = None
+    chunks: Annotated[list[rag.RetrievedChunk], operator.add] = []
+    tool_calls: Annotated[list[schemas.ToolCallTrace], operator.add] = []
+    tool_results: Annotated[list[contracts.ToolOutput], operator.add] = []
+    clarification: str = ""
+    draft: outputs.Answer | None = None
+    outcome: Outcome | None = None
+    timings_ms: Annotated[dict[str, int], _merge] = {}
 
 
 Node = Callable[[State], Awaitable[dict[str, Any]]]
@@ -90,7 +96,7 @@ def _timed(name: str, node: Node) -> Node:
 
 async def classify(
     provider: llm.LLMProvider, message: str, confirm_action: bool
-) -> llm_schemas.Classification:
+) -> outputs.Classification:
     """Asks the classifier model to route one message.
 
     Args:
@@ -106,7 +112,7 @@ async def classify(
         message=message, confirm_action=str(confirm_action).lower()
     )
     return await provider.structured(
-        role="classifier", prompt=prompt, schema=llm_schemas.Classification
+        role="classifier", prompt=prompt, schema=outputs.Classification
     )
 
 
@@ -119,14 +125,15 @@ def _format_chunks(chunks: list[rag.RetrievedChunk]) -> str:
     )
 
 
-def _format_tool_results(results: list[dict[str, Any]]) -> str:
+def _format_tool_results(results: list[contracts.ToolOutput]) -> str:
     if not results:
         return "(ninguno)"
-    return "\n".join(json.dumps(result, ensure_ascii=False) for result in results)
+    return "\n".join(output.model_dump_json() for output in results)
 
 
 def _template(state: State) -> Outcome:
-    decision = state["classification"]
+    decision = state.classification
+    assert decision is not None
     if decision.route == "injection":
         return Outcome(route="injection", answer="")
     if decision.route == "help":
@@ -135,12 +142,12 @@ def _template(state: State) -> Outcome:
         return Outcome(
             route="unsupported", answer=UNSUPPORTED_ANSWER, abstained=True, grounding="ungrounded"
         )
-    if not state.get("confirm_action"):
+    if not state.confirm_action:
         return Outcome(route="write", answer=WRITE_CONFIRMATION_ANSWER, requires_confirmation=True)
     return Outcome(route="write", answer=WRITE_UNAVAILABLE_ANSWER, abstained=True)
 
 
-def _evidence_route(decision: llm_schemas.Classification) -> str:
+def _evidence_route(decision: outputs.Classification) -> str:
     parts = [
         name
         for name, wanted in (("tools", decision.needs_tools), ("policy", decision.needs_policy))
@@ -158,8 +165,9 @@ def validate(state: State) -> Outcome:
     Returns:
         The final outcome.
     """
-    draft = state["draft"]
-    chunks = state.get("chunks", [])
+    draft = state.draft
+    assert draft is not None and state.classification is not None
+    chunks = state.chunks
     by_id = {chunk.chunk_id: chunk for chunk in chunks}
     cited = [by_id[cid] for cid in dict.fromkeys(draft.cited_chunk_ids) if cid in by_id]
     abstained = draft.grounding == "ungrounded"
@@ -176,70 +184,158 @@ def validate(state: State) -> Outcome:
         schemas.Similarity(top=max(scores), mean=sum(scores) / len(scores)) if scores else None
     )
     return Outcome(
-        route=_evidence_route(state["classification"]),
+        route=_evidence_route(state.classification),
         answer=draft.answer,
         citations=citations,
-        tool_calls=state.get("tool_calls", []),
+        tool_calls=state.tool_calls,
         abstained=abstained,
         grounding=draft.grounding,
         similarity=similarity,
     )
 
 
+async def gather_tool_data(
+    provider: llm.LLMProvider,
+    tool_runner: runner.ToolRunner,
+    settings: config.Settings,
+    message: str,
+    reference_date: datetime.date,
+) -> dict[str, Any]:
+    """Native tool-calling loop over the read tools, bounded by rounds and total calls.
+
+    Every proposed call is checked against the allowlist, its schema and argument provenance
+    before it runs. Rejected calls go back to the model as errors and never appear in traces.
+
+    Args:
+        provider: LLM backend for the tools role.
+        tool_runner: Executes validated calls over MCP.
+        settings: Limits for rounds and calls.
+        message: User message.
+        reference_date: Date that "hoy" refers to.
+
+    Returns:
+        State update with tool_calls, tool_results and, when nothing ran, a clarification.
+    """
+    prompt = prompting.load("tools").render(
+        reference_date=reference_date.isoformat(), message=message
+    )
+    allowed = provenance.Provenance(
+        text=message, dates=provenance.resolve_dates(message, reference_date)
+    )
+    specs = contracts.read_tool_specs()
+    rounds: list[outputs.ToolRound] = []
+    traces: list[schemas.ToolCallTrace] = []
+    results: list[contracts.ToolOutput] = []
+    clarification = ""
+    calls_left = settings.max_tool_calls
+    for _ in range(settings.max_tool_rounds):
+        step = await provider.choose_tools(prompt=prompt, rounds=rounds, tools=specs)
+        if not step.requests:
+            clarification = step.text if not traces else ""
+            break
+        current: outputs.ToolRound = []
+        for request in step.requests:
+            try:
+                if calls_left == 0:
+                    raise ValueError("tool call limit reached")
+                args = runner.validate_read(request.name, request.arguments)
+                if missing := allowed.missing(args):
+                    raise ValueError(f"not provided by the user: {', '.join(missing)}; ask for it")
+            except ValueError as exc:
+                current.append((request, {"error": str(exc)}))
+                continue
+            calls_left -= 1
+            trace, result = await tool_runner.execute(request.name, args)
+            allowed.add_result(result)
+            traces.append(trace)
+            results.append(contracts.ToolOutput(tool=request.name, result=result))
+            current.append((request, result))
+        rounds.append(current)
+    return {"tool_calls": traces, "tool_results": results, "clarification": clarification}
+
+
 def build(
     provider: llm.LLMProvider,
     settings: config.Settings,
     retriever: rag.Retriever | None = None,
+    tool_runner: runner.ToolRunner | None = None,
     top_k: int = 3,
 ) -> Any:
     """Compiles the answer graph.
 
     Args:
-        provider: LLM backend for the classifier and answer roles.
+        provider: LLM backend for the classifier, tools and answer roles.
         settings: Application settings.
         retriever: Policy retriever; without one the policy branch is skipped.
+        tool_runner: MCP tool runner; without one the tool and write branches are skipped.
         top_k: Chunks requested from the retriever.
 
     Returns:
         A compiled LangGraph runnable that takes and returns State.
     """
-    reference_date = config.load_variant(settings.variant_path).reference_date.isoformat()
+    reference = config.load_variant(settings.variant_path).reference_date
+    reference_date = reference.isoformat()
 
     async def classify_node(state: State) -> dict[str, Any]:
-        decision = await classify(provider, state["message"], state.get("confirm_action", False))
+        decision = await classify(provider, state.message, state.confirm_action)
         return {"classification": decision}
 
     def after_classify(state: State) -> list[lg_types.Send] | str:
-        decision = state["classification"]
-        if decision.route != "answer" or decision.write_requested:
+        decision = state.classification
+        assert decision is not None
+        if decision.route != "answer" or (decision.write_requested and tool_runner is None):
             return "respond"
+        if decision.write_requested:
+            return "write"
         sends = []
+        if decision.needs_tools and tool_runner is not None:
+            sends.append(lg_types.Send("tools", state))
         if decision.needs_policy and retriever is not None:
             sends.append(lg_types.Send("retrieve", state))
         return sends or "answer"
+
+    async def write_node(state: State) -> dict[str, Any]:
+        assert tool_runner is not None
+        result = await write_gate.handle(state.message, state.confirm_action, tool_runner)
+        outcome = Outcome(
+            route="write",
+            answer=result.answer,
+            tool_calls=result.tool_calls,
+            requires_confirmation=result.requires_confirmation,
+        )
+        return {"outcome": outcome}
+
+    async def tools_node(state: State) -> dict[str, Any]:
+        assert tool_runner is not None
+        return await gather_tool_data(provider, tool_runner, settings, state.message, reference)
 
     async def respond_node(state: State) -> dict[str, Any]:
         return {"outcome": _template(state)}
 
     async def retrieve_node(state: State) -> dict[str, Any]:
         assert retriever is not None
-        return {"chunks": await retriever.search(state["message"], top_k=top_k)}
+        return {"chunks": await retriever.search(state.message, top_k=top_k)}
 
     async def answer_node(state: State) -> dict[str, Any]:
-        chunks = state.get("chunks", [])
-        results = state.get("tool_results", [])
+        chunks = state.chunks
+        results = state.tool_results
         if not chunks and not results:
-            draft = llm_schemas.Answer(
-                answer=NO_EVIDENCE_ANSWER, cited_chunk_ids=[], grounding="ungrounded"
-            )
+            if clarification := state.clarification:
+                draft = outputs.Answer(
+                    answer=clarification, cited_chunk_ids=[], grounding="qualified"
+                )
+            else:
+                draft = outputs.Answer(
+                    answer=NO_EVIDENCE_ANSWER, cited_chunk_ids=[], grounding="ungrounded"
+                )
             return {"draft": draft}
         prompt = prompting.load("answer").render(
             reference_date=reference_date,
             chunks=_format_chunks(chunks),
             tool_results=_format_tool_results(results),
-            message=state["message"],
+            message=state.message,
         )
-        draft = await provider.structured(role="answer", prompt=prompt, schema=llm_schemas.Answer)
+        draft = await provider.structured(role="answer", prompt=prompt, schema=outputs.Answer)
         return {"draft": draft}
 
     async def validate_node(state: State) -> dict[str, Any]:
@@ -248,12 +344,18 @@ def build(
     builder = lg_graph.StateGraph(State)
     builder.add_node("classify", _timed("classify", classify_node))
     builder.add_node("respond", _timed("respond", respond_node))
+    builder.add_node("write", _timed("write", write_node))
+    builder.add_node("tools", _timed("tools", tools_node))
     builder.add_node("retrieve", _timed("retrieve", retrieve_node))
     builder.add_node("answer", _timed("answer", answer_node))
     builder.add_node("validate", _timed("validate", validate_node))
     builder.add_edge(lg_graph.START, "classify")
-    builder.add_conditional_edges("classify", after_classify, ["respond", "retrieve", "answer"])
+    builder.add_conditional_edges(
+        "classify", after_classify, ["respond", "write", "tools", "retrieve", "answer"]
+    )
+    builder.add_edge("tools", "answer")
     builder.add_edge("retrieve", "answer")
+    builder.add_edge("write", lg_graph.END)
     builder.add_edge("answer", "validate")
     builder.add_edge("validate", lg_graph.END)
     builder.add_edge("respond", lg_graph.END)
