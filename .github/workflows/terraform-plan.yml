@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: infra/terraform/envs/dev
+        working-directory: infra/terraform/projects/dev
     env:
       TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
       TF_VAR_region: ${{ vars.GCP_REGION }}
@@ -28,7 +28,7 @@ jobs:
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_TERRAFORM_SA }}
+          service_account: ${{ vars.GCP_PLAN_SA }}
       - run: terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
       - run: terraform validate
       - run: terraform plan -input=false -lock=false -no-color

@@ -22,7 +22,13 @@ data "google_project" "this" {}
 resource "google_service_account_iam_member" "deployer_wif" {
   service_account_id = google_service_account.deployer.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principalSet://iam.googleapis.com/projects/${data.google_project.this.number}/locations/global/workloadIdentityPools/github/attribute.repository/${var.github_repository}"
+  member             = "principalSet://iam.googleapis.com/projects/${data.google_project.this.number}/locations/global/workloadIdentityPools/github/attribute.release/true"
+}
+
+resource "google_service_account_iam_member" "terraform_acts_as_runtime" {
+  service_account_id = google_service_account.runtime.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:aeroassist-terraform@${var.project_id}.iam.gserviceaccount.com"
 }
 
 resource "google_service_account_iam_member" "deployer_acts_as_runtime" {

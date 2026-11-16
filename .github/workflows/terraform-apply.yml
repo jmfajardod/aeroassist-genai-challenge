@@ -13,12 +13,12 @@ concurrency:
 
 jobs:
   apply:
-    if: github.ref == 'refs/heads/main' && github.actor == github.repository_owner
+    if: startsWith(github.ref, 'refs/heads/release/') && github.actor == github.repository_owner
     runs-on: ubuntu-latest
     environment: production
     defaults:
       run:
-        working-directory: infra/terraform/envs/dev
+        working-directory: infra/terraform/projects/dev
     env:
       TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
       TF_VAR_region: ${{ vars.GCP_REGION }}
