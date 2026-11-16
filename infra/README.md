@@ -9,7 +9,7 @@ versioned GCS bucket.
 | bootstrap.sh | APIs, the Terraform state bucket, the GitHub Workload Identity pool and provider (restricted to one repository), and the Terraform service account |
 | terraform/modules/artifact_registry | Docker repository with a cleanup policy (keep the 5 most recent images) and writer bindings |
 | terraform/modules/secrets | Secret Manager containers, readable only by the runtime service account; values are added outside Terraform |
-| terraform/modules/cloud_run | The Cloud Run service (1 vCPU, 1 GiB, min 0, max 1, concurrency 10, 80 s timeout, startup probe on /ready, liveness on /health, public invoker) and deployer binding; Terraform ignores image changes because CD deploys images |
+| terraform/modules/cloud_run | The Cloud Run service (1 vCPU, 2 GiB, min 0, max 1, concurrency 10, 80 s timeout, startup probe on /ready, liveness on /health, public invoker) and deployer binding; Terraform ignores image changes because CD deploys images |
 | terraform/envs/dev | Runtime and deployer service accounts, least-privilege bindings, and the modules above |
 
 Identities: the runtime account can only read its three secrets; the deployer can push images,
