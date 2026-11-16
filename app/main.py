@@ -167,7 +167,7 @@ def create_app(
         return schemas.CapabilitiesResponse(
             challenge_version=variant.challenge_version,
             levels=schemas.CapabilityLevels(
-                foundation=False, core=True, tools_mcp=True, rag=True, production=False
+                foundation=True, core=True, tools_mcp=True, rag=True, production=False
             ),
             llm_backend=settings.llm_backend,
             tool_transport="mcp-stdio",
