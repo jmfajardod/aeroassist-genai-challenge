@@ -6,7 +6,7 @@ Using AI is allowed. This disclosure is not scored by the amount of AI used; it 
 
 | Tool/model | Tasks | Approximate share | How output was verified |
 | --- | --- | ---: | --- |
-| Claude Code (Opus 5.5) | Generation of the evaluation datasets, and code generation for the application, tests, infrastructure and workflows | _to fill_ | 86 tests and lint in CI, my spot-check of the datasets, the official public evaluator (8/8 local, in Docker and on Cloud Run), evaluation runs with real models (docs/test_results/), and my review of every decision |
+| Claude Code (Opus 5.5) | Generation of the evaluation datasets, and code generation for the application, tests, infrastructure and workflows | 90% | 86 tests and lint in CI, my spot-check of the datasets, the official public evaluator (8/8 local, in Docker and on Cloud Run), evaluation runs with real models (docs/test_results/), and my review of every decision |
 
 ## Material changes made after AI output
 
