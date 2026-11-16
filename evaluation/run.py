@@ -453,7 +453,7 @@ def main(argv: list[str] | None = None) -> int:
     report["meta"] = {
         "suite": args.suite,
         "label": args.label,
-        "target": args.base_url or "in-process",
+        "target": "remote" if args.base_url else "in-process",
         "llm_backend": os.environ.get("LLM_BACKEND", "fake"),
         "run_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
     }

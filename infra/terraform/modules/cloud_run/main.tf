@@ -56,10 +56,10 @@ resource "google_cloud_run_v2_service" "this" {
         http_get {
           path = "/ready"
         }
-        initial_delay_seconds = 2
-        period_seconds        = 5
-        timeout_seconds       = 4
-        failure_threshold     = 24
+        initial_delay_seconds = 0
+        period_seconds        = 2
+        timeout_seconds       = 2
+        failure_threshold     = 60
       }
 
       liveness_probe {

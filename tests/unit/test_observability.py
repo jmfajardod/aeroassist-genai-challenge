@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.api import readiness
 from app.observability import redaction, tracing, usage
 from app.orchestration import prompting
 
@@ -53,3 +54,17 @@ class _BrokenLangfuse:
 def test_prompt_falls_back_to_bundled_copy_when_langfuse_fails() -> None:
     prompt = prompting.load_from_langfuse(_BrokenLangfuse(), "production", "answer")
     assert prompt == prompting.load("answer")
+
+
+async def test_readiness_does_not_cache_failures() -> None:
+    state = {"ready": False}
+
+    async def check() -> bool:
+        return state["ready"]
+
+    probe = readiness.Readiness({"index": check}, timeout_seconds=1, cache_seconds=60)
+    assert await probe.run() == {"index": False}
+    state["ready"] = True
+    assert await probe.run() == {"index": True}
+    state["ready"] = False
+    assert await probe.run() == {"index": True}

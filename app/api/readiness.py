@@ -48,6 +48,9 @@ class Readiness:
     async def run(self) -> dict[str, bool]:
         """Returns each check's status, reusing a fresh cached result.
 
+        Only fully ready results are cached, so a failure during startup is retried on the next
+        probe instead of being served from the cache.
+
         Returns:
             Mapping of check name to readiness.
         """
@@ -56,5 +59,6 @@ class Readiness:
             return self._cached[1]
         names = list(self._checks)
         results = await asyncio.gather(*(self._run_one(n, self._checks[n]) for n in names))
-        self._cached = (now, dict(zip(names, results, strict=True)))
-        return self._cached[1]
+        checks = dict(zip(names, results, strict=True))
+        self._cached = (now, checks) if checks and all(checks.values()) else None
+        return checks

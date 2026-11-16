@@ -61,6 +61,7 @@ module "service" {
   image                 = var.image
   service_account_email = google_service_account.runtime.email
   deployer_members      = [google_service_account.deployer.member]
+  min_instances         = 1
   env = {
     APP_ENV       = var.app_env
     LLM_BACKEND   = "openai"
