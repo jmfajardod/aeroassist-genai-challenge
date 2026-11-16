@@ -118,3 +118,24 @@ def test_out_of_scope_question_abstains() -> None:
     body = _client().post("/v1/chat", json={"message": "¿Precio del dólar mañana?"}).json()
     assert body["abstained"] is True
     assert body["tool_calls"] == [] and body["requires_confirmation"] is False
+
+
+def test_tracing_fails_open_when_langfuse_is_unreachable() -> None:
+    client = _client(
+        langfuse_public_key="pk-test",
+        langfuse_secret_key="sk-test",  # noqa: S106
+        langfuse_base_url="http://127.0.0.1:9",
+    )
+    assert client.post("/v1/chat", json=HELP).status_code == 200
+
+
+def test_metrics_count_tools_and_routes_with_bounded_labels() -> None:
+    client = _client()
+    message = {"message": "¿Cuál es el estado de LA401 para el 2026-08-06?"}
+    assert client.post("/v1/chat", json=message).status_code == 200
+    text = client.get("/metrics").text
+    assert 'aeroassist_tool_calls_total{status="ok",tool="get_flight_status"} 1.0' in text
+    assert 'aeroassist_chat_routes_total{abstained="false",route="tools+policy"}' in text or (
+        'aeroassist_chat_routes_total{abstained="false",route="tools"}' in text
+    )
+    assert "LA401" not in text

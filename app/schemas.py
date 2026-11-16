@@ -49,6 +49,16 @@ class Similarity(pydantic.BaseModel):
     mean: float = pydantic.Field(ge=0.0, le=1.0)
 
 
+class Usage(pydantic.BaseModel):
+    """LLM token usage and estimated cost of one request."""
+
+    llm_calls: int
+    input_tokens: int
+    cached_tokens: int
+    output_tokens: int
+    cost_usd: float | None
+
+
 class ChatResponse(pydantic.BaseModel):
     """Chat output: contract fields first, then diagnostic extras."""
 
@@ -60,13 +70,12 @@ class ChatResponse(pydantic.BaseModel):
     model: str
     latency_ms: int = pydantic.Field(ge=0)
     abstained: bool = False
-    grounding: Literal["grounded", "qualified", "ungrounded", "not_applicable"] = (
-        "not_applicable"
-    )
+    grounding: Literal["grounded", "qualified", "ungrounded", "not_applicable"] = "not_applicable"
     similarity: Similarity | None = None
     route: str | None = None
     index_version: str | None = None
     latency_breakdown_ms: dict[str, int] = pydantic.Field(default_factory=dict)
+    usage: Usage | None = None
 
 
 class HealthResponse(pydantic.BaseModel):

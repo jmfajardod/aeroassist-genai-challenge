@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import threading
 import time
 from collections.abc import AsyncIterator
@@ -17,7 +18,8 @@ from app import agent as agent_lib
 from app.api import limits, readiness
 from app.core import config, constants, errors
 from app.mcp_tools import runner, transport
-from app.observability import log, metrics, middleware
+from app.observability import log, metrics, middleware, tracing, usage
+from app.orchestration import prompting
 from app.retrieval import chunker, ingest, retriever
 
 
@@ -30,6 +32,7 @@ class _Runtime:
         self._transport: transport.McpTransport | None = None
         self._retriever: retriever.QdrantRetriever | None = None
         self._lock = threading.Lock()
+        self.tracer = tracing.Tracer(settings)
 
     def transport(self) -> transport.McpTransport:
         """Returns the MCP transport; the subprocess starts on the first call."""
@@ -47,8 +50,20 @@ class _Runtime:
                     self.settings,
                     retriever=self._build_retriever(),
                     tool_runner=runner.ToolRunner(self.transport()),
+                    tracer=self.tracer,
+                    prompts=self._prompt_loader(),
                 )
             return self._agent
+
+    def _prompt_loader(self) -> prompting.PromptLoader:
+        """Langfuse Prompt Management when configured and tracing is on, else bundled prompts."""
+        if self.settings.prompt_source == "langfuse" and self.tracer.client is not None:
+            return functools.partial(
+                prompting.load_from_langfuse,
+                self.tracer.client,
+                self.settings.langfuse_prompt_label,
+            )
+        return prompting.load
 
     def _build_retriever(self) -> retriever.QdrantRetriever:
         """Connects to Qdrant; without QDRANT_URL it indexes the bundled corpus in process."""
@@ -127,6 +142,7 @@ def create_app(
         task = asyncio.create_task(runtime.warm_up())
         yield
         task.cancel()
+        runtime.tracer.flush()
 
     application = fastapi.FastAPI(title="AeroAssist", version=__version__, lifespan=lifespan)
     errors.install_handlers(application)
@@ -166,11 +182,16 @@ def create_app(
             try:
                 async with asyncio.timeout(settings.request_deadline_seconds):
                     chat_agent = await runtime.agent()
+                    tracker = usage.start()
                     response = await chat_agent.chat(payload, request_id=request.state.request_id)
             except TimeoutError as exc:
                 raise errors.UpstreamTimeoutError("The request exceeded its time budget.") from exc
         latency_ms = round((time.perf_counter() - started) * 1000)
-        return response.model_copy(update={"latency_ms": latency_ms})
+        response = response.model_copy(
+            update={"latency_ms": latency_ms, "usage": tracker.summary()}
+        )
+        registry.observe_chat(response, tracker.calls)
+        return response
 
     @application.get("/metrics")
     async def metrics_endpoint() -> fastapi.Response:

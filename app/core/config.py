@@ -38,6 +38,11 @@ class Settings(pydantic_settings.BaseSettings):
     llm_backend: Literal["fake", "openai"] = "fake"
     openai_api_key: pydantic.SecretStr | None = None
     llm_base_url: str | None = None
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: pydantic.SecretStr | None = None
+    langfuse_base_url: str = "https://cloud.langfuse.com"
+    prompt_source: Literal["repo", "langfuse"] = "repo"
+    langfuse_prompt_label: str = "production"
     classifier_model: str = "gpt-6.1-terra"
     classifier_max_tokens: int = pydantic.Field(default=1024, gt=0)
     classifier_reasoning_effort: ReasoningEffort = "low"

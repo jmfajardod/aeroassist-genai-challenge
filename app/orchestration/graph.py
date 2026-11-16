@@ -23,6 +23,7 @@ from langgraph import types as lg_types
 from app import llm, rag, schemas
 from app.core import config
 from app.mcp_tools import contracts, provenance, runner, write_gate
+from app.observability import redaction
 from app.orchestration import prompting
 from app.providers import outputs
 
@@ -99,21 +100,25 @@ def _timed(name: str, node: Node) -> Node:
 
 
 async def classify(
-    provider: llm.LLMProvider, message: str, confirm_action: bool
+    provider: llm.LLMProvider,
+    message: str,
+    confirm_action: bool,
+    prompts: prompting.PromptLoader = prompting.load,
 ) -> outputs.Classification:
     """Asks the classifier model to route one message.
 
     Args:
         provider: LLM backend.
-        message: User message.
+        message: User message; personal data is redacted before it reaches the model.
         confirm_action: The request's confirmation flag, so a plain confirmation is not
             mistaken for a forged one.
+        prompts: Prompt source.
 
     Returns:
         The routing decision.
     """
-    prompt = prompting.load("classifier").render(
-        message=message, confirm_action=str(confirm_action).lower()
+    prompt = prompts("classifier").render(
+        message=redaction.redact_personal(message), confirm_action=str(confirm_action).lower()
     )
     return await provider.structured(
         role="classifier", prompt=prompt, schema=outputs.Classification
@@ -204,6 +209,7 @@ async def gather_tool_data(
     settings: config.Settings,
     message: str,
     reference_date: datetime.date,
+    prompts: prompting.PromptLoader = prompting.load,
 ) -> dict[str, Any]:
     """Native tool-calling loop over the read tools, bounded by rounds and total calls.
 
@@ -216,12 +222,13 @@ async def gather_tool_data(
         settings: Limits for rounds and calls.
         message: User message.
         reference_date: Date that "hoy" refers to.
+        prompts: Prompt source.
 
     Returns:
         State update with tool_calls, tool_results and, when nothing ran, a clarification.
     """
-    prompt = prompting.load("tools").render(
-        reference_date=reference_date.isoformat(), message=message
+    prompt = prompts("tools").render(
+        reference_date=reference_date.isoformat(), message=redaction.redact_personal(message)
     )
     allowed = provenance.Provenance(
         text=message, dates=provenance.resolve_dates(message, reference_date)
@@ -263,6 +270,7 @@ def build(
     settings: config.Settings,
     retriever: rag.Retriever | None = None,
     tool_runner: runner.ToolRunner | None = None,
+    prompts: prompting.PromptLoader = prompting.load,
 ) -> Any:
     """Compiles the answer graph.
 
@@ -271,6 +279,7 @@ def build(
         settings: Application settings.
         retriever: Policy retriever; without one the policy branch is skipped.
         tool_runner: MCP tool runner; without one the tool and write branches are skipped.
+        prompts: Prompt source: the bundled templates or Langfuse Prompt Management.
 
     Returns:
         A compiled LangGraph runnable that takes and returns State.
@@ -279,7 +288,7 @@ def build(
     reference_date = reference.isoformat()
 
     async def classify_node(state: State) -> dict[str, Any]:
-        decision = await classify(provider, state.message, state.confirm_action)
+        decision = await classify(provider, state.message, state.confirm_action, prompts)
         return {"classification": decision}
 
     def after_classify(state: State) -> list[lg_types.Send] | str:
@@ -309,7 +318,9 @@ def build(
 
     async def tools_node(state: State) -> dict[str, Any]:
         assert tool_runner is not None
-        return await gather_tool_data(provider, tool_runner, settings, state.message, reference)
+        return await gather_tool_data(
+            provider, tool_runner, settings, state.message, reference, prompts
+        )
 
     async def respond_node(state: State) -> dict[str, Any]:
         return {"outcome": _template(state)}
@@ -328,12 +339,12 @@ def build(
                 grounding="qualified" if state.clarification else "ungrounded",
             )
             return {"draft": draft}
-        prompt = prompting.load("answer").render(
+        prompt = prompts("answer").render(
             reference_date=reference_date,
             chunks=_format_chunks(chunks),
             tool_results=_format_tool_results(results),
             missing=state.clarification or "(ninguno)",
-            message=state.message,
+            message=redaction.redact_personal(state.message),
         )
         draft = await provider.structured(role="answer", prompt=prompt, schema=outputs.Answer)
         return {"draft": draft}

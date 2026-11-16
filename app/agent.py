@@ -5,7 +5,8 @@ from __future__ import annotations
 from app import llm, rag, schemas
 from app.core import config, errors
 from app.mcp_tools import runner
-from app.orchestration import graph
+from app.observability import tracing
+from app.orchestration import graph, prompting
 
 
 class AeroAssistAgent:
@@ -16,6 +17,8 @@ class AeroAssistAgent:
         settings: Application settings.
         retriever: Optional policy retriever.
         tool_runner: Optional MCP tool runner.
+        tracer: Optional Langfuse tracer.
+        prompts: Prompt source; defaults to the bundled templates.
     """
 
     def __init__(
@@ -24,11 +27,14 @@ class AeroAssistAgent:
         settings: config.Settings,
         retriever: rag.Retriever | None = None,
         tool_runner: runner.ToolRunner | None = None,
+        tracer: tracing.Tracer | None = None,
+        prompts: prompting.PromptLoader = prompting.load,
     ) -> None:
         self._provider = provider
         self._settings = settings
         self._retriever = retriever
-        self._graph = graph.build(provider, settings, retriever, tool_runner)
+        self._tracer = tracer
+        self._graph = graph.build(provider, settings, retriever, tool_runner, prompts)
 
     async def chat(self, request: schemas.ChatRequest, *, request_id: str) -> schemas.ChatResponse:
         """Builds the response for one chat request.
@@ -45,7 +51,10 @@ class AeroAssistAgent:
         """
         state = await self._graph.ainvoke(
             graph.State(message=request.message, confirm_action=request.confirm_action),
-            config={"recursion_limit": self._settings.max_graph_steps},
+            config={
+                "recursion_limit": self._settings.max_graph_steps,
+                **(self._tracer.run_config(request_id, request.session_id) if self._tracer else {}),
+            },
         )
         outcome: graph.Outcome = state["outcome"]
         if outcome.route == "injection":

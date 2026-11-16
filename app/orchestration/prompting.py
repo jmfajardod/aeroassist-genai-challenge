@@ -8,10 +8,17 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import logging
 import pathlib
 import re
+from collections.abc import Callable
+from typing import Any
 
 import pydantic
+
+logger = logging.getLogger("aeroassist")
+
+PromptLoader = Callable[[str], "Prompt"]
 
 _PROMPTS_DIR = pathlib.Path(__file__).resolve().parent / "prompts"
 _PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}")
@@ -83,3 +90,39 @@ def load(name: str) -> Prompt:
     system = (_PROMPTS_DIR / f"{name}_system.md").read_text(encoding="utf-8").strip()
     user = (_PROMPTS_DIR / f"{name}_user.md").read_text(encoding="utf-8").strip()
     return Prompt(name=name, system=system, user_template=user)
+
+
+def load_from_langfuse(client: Any, label: str, name: str) -> Prompt:
+    """Fetches a prompt from Langfuse Prompt Management, falling back to the bundled copy.
+
+    The SDK caches prompts for 60 seconds and serves the fallback when the fetch fails, so a
+    Langfuse outage never breaks a request.
+
+    Args:
+        client: Langfuse client.
+        label: Prompt label to serve, e.g. "production".
+        name: Prompt name.
+
+    Returns:
+        The remote prompt, or the bundled one if it cannot be fetched or is malformed.
+    """
+    bundled = load(name)
+    fallback = [
+        {"role": "system", "content": bundled.system},
+        {"role": "user", "content": bundled.user_template},
+    ]
+    try:
+        remote = client.get_prompt(
+            name,
+            type="chat",
+            label=label,
+            cache_ttl_seconds=60,
+            fallback=fallback,
+            max_retries=1,
+            fetch_timeout_seconds=3,
+        )
+        by_role = {message["role"]: message["content"] for message in remote.prompt}
+        return Prompt(name=name, system=by_role["system"], user_template=by_role["user"])
+    except Exception as exc:
+        logger.warning("prompt_fallback", extra={"prompt": name, "error": type(exc).__name__})
+        return bundled

@@ -69,6 +69,17 @@ def _mean(values: list[float]) -> float:
     return round(statistics.fmean(values), 4) if values else 0.0
 
 
+def _cost(rows: list[dict[str, Any]]) -> dict[str, float]:
+    """Mean tokens and estimated USD cost per request, over requests that reported usage."""
+    usages = [row["usage"] for row in rows if row.get("usage")]
+    costs = [u["cost_usd"] for u in usages if u.get("cost_usd") is not None]
+    tokens = [u["input_tokens"] + u["output_tokens"] for u in usages]
+    return {
+        "cost_per_request_usd": round(statistics.fmean(costs), 6) if costs else 0.0,
+        "tokens_per_request": round(statistics.fmean(tokens), 1) if tokens else 0.0,
+    }
+
+
 def _latency(latencies: list[float]) -> dict[str, float]:
     return {
         "p50_ms": round(metrics.percentile(latencies, 50), 1),
@@ -157,6 +168,7 @@ def run_rag(client: ChatClient, judge: bool) -> dict[str, Any]:
                 "behavior_ok": behavior_ok,
                 "evidence_ok": metrics.contains_any(body, case.must_contain_any),
                 "latency_ms": round(elapsed, 1),
+                "usage": body.get("usage"),
             }
         )
     answered = [row for row in rows if row["behavior"] != "abstain"]
@@ -175,6 +187,7 @@ def run_rag(client: ChatClient, judge: bool) -> dict[str, Any]:
         "behavior_accuracy": _mean([float(row["behavior_ok"]) for row in rows]),
         "evidence_rate": _mean([float(row["evidence_ok"]) for row in rows]),
         **_latency([row["latency_ms"] for row in rows]),
+        **_cost(rows),
     }
     if judge:
         summary.update(_judge_scores(rows))
@@ -200,6 +213,7 @@ def run_mcp(client: ChatClient, judge: bool) -> dict[str, Any]:
             "gate_violation": metrics.write_gate_violated(case.request.confirm_action, body),
             "forbidden_called": sorted(names & set(case.forbid_tools)),
             "latency_ms": round(elapsed, 1),
+            "usage": body.get("usage"),
         }
         if status == 200:
             row["confirmation_ok"] = body.get("requires_confirmation") is case.requires_confirmation
@@ -223,6 +237,7 @@ def run_mcp(client: ChatClient, judge: bool) -> dict[str, Any]:
         "confirmation_accuracy": _mean([float(row["confirmation_ok"]) for row in ok]),
         "evidence_rate": _mean([float(row["evidence_ok"]) for row in ok]),
         **_latency([row["latency_ms"] for row in rows]),
+        **_cost(rows),
     }
     return {"summary": summary, "cases": rows}
 
@@ -240,7 +255,13 @@ def run_e2e(client: ChatClient, judge: bool) -> dict[str, Any]:
         if metrics.write_gate_violated(case.request.confirm_action, body):
             failures.append("write_gate_violation")
         rows.append(
-            {"id": case.id, "status": status, "failures": failures, "latency_ms": round(elapsed, 1)}
+            {
+                "id": case.id,
+                "status": status,
+                "failures": failures,
+                "latency_ms": round(elapsed, 1),
+                "usage": body.get("usage"),
+            }
         )
     public = [row for row in rows if row["id"].startswith("public-")]
     summary = {
@@ -250,6 +271,7 @@ def run_e2e(client: ChatClient, judge: bool) -> dict[str, Any]:
         "write_gate_violations": sum("write_gate_violation" in row["failures"] for row in rows),
         "server_errors": sum(row["status"] >= 500 for row in rows),
         **_latency([row["latency_ms"] for row in rows]),
+        **_cost(rows),
     }
     return {"summary": summary, "cases": rows}
 

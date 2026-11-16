@@ -14,6 +14,7 @@ from langchain import chat_models
 from langchain_core import messages as lc_messages
 
 from app.core import config, errors
+from app.observability import usage
 from app.orchestration import prompting
 from app.providers import outputs
 
@@ -95,6 +96,11 @@ class LangChainLLM:
                 settings.tools_model, settings.tools_max_tokens, settings.tools_reasoning_effort
             ),
         }
+        self._model_ids = {
+            "classifier": settings.classifier_model,
+            "answer": settings.answer_model,
+            "tools": settings.tools_model,
+        }
         self._runnables: dict[tuple[str, type], Any] = {}
 
     def _chat_model(self, model: str, max_tokens: int, reasoning_effort: str) -> Any:
@@ -130,16 +136,25 @@ class LangChainLLM:
         key = (role, schema)
         if key not in self._runnables:
             self._runnables[key] = self._models[role].with_structured_output(
-                schema, method="json_schema", strict=True
+                schema, method="json_schema", strict=True, include_raw=True
             )
         runnable = self._runnables[key]
         messages = [("system", prompt.system), ("human", prompt.user)]
-        return await call_with_retries(
-            lambda: runnable.ainvoke(messages),
+
+        async def invoke() -> dict[str, Any]:
+            result = await runnable.ainvoke(messages)
+            if result["parsing_error"] is not None or result["parsed"] is None:
+                raise ValueError("structured output did not match the schema")
+            return result
+
+        result = await call_with_retries(
+            invoke,
             timeout_seconds=self._settings.llm_timeout_seconds,
             max_retries=self._settings.llm_max_retries,
             backoff_seconds=self._settings.llm_retry_backoff_seconds,
         )
+        usage.record(role, self._model_ids[role], result["raw"].usage_metadata)
+        return result["parsed"]
 
     async def choose_tools(
         self,
@@ -183,6 +198,7 @@ class LangChainLLM:
             max_retries=self._settings.llm_max_retries,
             backoff_seconds=self._settings.llm_retry_backoff_seconds,
         )
+        usage.record("tools", self._model_ids["tools"], reply.usage_metadata)
         requests = [
             outputs.ToolRequest(
                 id=call["id"] or f"call-{i}", name=call["name"], arguments=call["args"]

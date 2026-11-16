@@ -1,4 +1,4 @@
-.PHONY: help install test lint run evaluate-public docker-build eval-classify eval-retrieval eval-rag eval-mcp eval-e2e
+.PHONY: help install test lint run evaluate-public docker-build sync-prompts sync-datasets eval-classify eval-retrieval eval-rag eval-mcp eval-e2e
 
 UV ?= uv
 RUN := $(UV) run --frozen
@@ -26,6 +26,12 @@ evaluate-public: ## Run the public black-box cases against BASE_URL
 
 docker-build: ## Build the local OCI image
 	docker build -t aeroassist:local .
+
+sync-prompts: ## Push changed bundled prompts to Langfuse Prompt Management
+	$(RUN) python -m app.orchestration.prompt_sync
+
+sync-datasets: ## Mirror the evaluation datasets into Langfuse Datasets
+	$(RUN) --group eval python -m evaluation.langfuse_sync
 
 eval-classify: ## Classifier route and flag accuracy for CLASSIFIER_MODEL (paid with a real backend)
 	$(RUN) --group eval python -m evaluation.run classify --label $(EVAL_LABEL) $(EVAL_ARGS)
