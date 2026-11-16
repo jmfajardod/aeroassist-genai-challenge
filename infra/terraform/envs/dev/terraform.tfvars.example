@@ -1,0 +1,5 @@
+project_id        = "my-gcp-project"
+region            = "us-central1"
+github_repository = "owner/repo"
+# Set after the first image is pushed; later revisions are deployed by the cd workflow.
+image = ""

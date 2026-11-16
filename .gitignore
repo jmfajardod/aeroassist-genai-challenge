@@ -18,3 +18,5 @@ gha-creds-*.json
 
 # Routine evaluation runs; commit only labelled evidence reports.
 docs/test_results/*-local.json
+*.tfvars
+!*.tfvars.example
