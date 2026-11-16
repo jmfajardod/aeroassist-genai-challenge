@@ -357,7 +357,7 @@ def run_retrieval(client: ChatClient, judge: bool) -> dict[str, Any]:
     rows = []
     for case in datasets.load(datasets.DATASETS_DIR / "rag.jsonl", datasets.RagCase):
         started = time.perf_counter()
-        chunks = repo.search(case.question, k)
+        chunks = repo.search(retriever.policy_query(case.question), k)
         elapsed = (time.perf_counter() - started) * 1000
         docs = list(dict.fromkeys(chunk.doc_id for chunk in chunks))
         kept = list(dict.fromkeys(chunk.doc_id for chunk in gate.apply_thresholds(chunks)))

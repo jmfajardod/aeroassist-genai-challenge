@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
 import qdrant_client
 
 from app import rag
-from app.core import config
+from app.core import config, constants
 from app.retrieval import chunker, embeddings, repository
 
 
@@ -43,6 +44,29 @@ def build_repository(settings: config.Settings) -> repository.QdrantRepository:
     )
     repo.ensure_collections()
     return repo
+
+
+def policy_query(text: str) -> str:
+    """Removes flight numbers, booking codes and dates before semantic search.
+
+    Those identifiers are for the tools; in the query they only dilute the embedding (for
+    example, a care question with a flight and date dropped below the evidence gate).
+
+    Args:
+        text: User message.
+
+    Returns:
+        The message without operational identifiers, or the original text if nothing is left.
+    """
+    stripped = text
+    for pattern in (
+        constants.FLIGHT_PATTERN,
+        constants.BOOKING_PATTERN,
+        constants.ISO_DATE_PATTERN,
+    ):
+        stripped = pattern.sub(" ", stripped)
+    stripped = re.sub(r"\s+", " ", stripped).strip()
+    return stripped or text
 
 
 class QdrantRetriever:
@@ -81,7 +105,8 @@ class QdrantRetriever:
         Returns:
             Chunks that pass both thresholds, in fused rank order.
         """
-        return self.apply_thresholds(await asyncio.to_thread(self._repo.search, query, top_k))
+        chunks = await asyncio.to_thread(self._repo.search, policy_query(query), top_k)
+        return self.apply_thresholds(chunks)
 
     def apply_thresholds(self, chunks: list[rag.RetrievedChunk]) -> list[rag.RetrievedChunk]:
         """Applies the evidence gate, then the per-chunk floor.

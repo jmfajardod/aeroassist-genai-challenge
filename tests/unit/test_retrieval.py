@@ -91,3 +91,14 @@ def test_evidence_gate_then_floor(repo: repository.QdrantRepository) -> None:
     assert gate.apply_thresholds([_chunk("A", 0.44), _chunk("B", 0.3)]) == []
     kept = gate.apply_thresholds([_chunk("A", 0.5), _chunk("B", 0.25), _chunk("C", 0.1)])
     assert [c.doc_id for c in kept] == ["A", "B"]
+
+
+def test_policy_query_drops_operational_identifiers() -> None:
+    query = (
+        "El LA602 del 2026-08-06 de la reserva Q7M2PX viene atrasado, ¿qué asistencia corresponde?"
+    )
+    assert (
+        retriever.policy_query(query)
+        == "El del de la reserva viene atrasado, ¿qué asistencia corresponde?"
+    )
+    assert retriever.policy_query("LA602") == "LA602"
